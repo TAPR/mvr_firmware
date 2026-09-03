@@ -166,6 +166,17 @@ void menuPoll() {
       }
       s_lineLen = 0;
       if (s_state == MenuState::IDLE) return;  // exited mid-drain, stop here
+    } else if (c == '\b' || c == (char)0x7F) {
+      // Backspace (0x08) or Delete (0x7F) -- different terminals send
+      // different codes for the same key, so accept either. Erase the
+      // last buffered character and produce the matching visual erase
+      // (cursor back, overwrite with a space, cursor back again) --
+      // does nothing if the line is already empty, so this can't back
+      // up into the prompt text itself.
+      if (s_lineLen > 0) {
+        s_lineLen--;
+        CMD_SERIAL.print(F("\b \b"));
+      }
     } else if (s_lineLen < sizeof(s_lineBuf) - 1) {
       CMD_SERIAL.write(c);  // echo what was typed -- no local echo can be assumed
       s_lineBuf[s_lineLen++] = c;
