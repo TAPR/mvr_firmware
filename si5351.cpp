@@ -7,6 +7,9 @@
 //   - AN619 rational-approximation math (find_multisynth_params /
 //     find_pll_params / the shared-VCO search for CLK1+CLK2)
 //   - register packing
+//   - computeClockPlan() -- pure computation, no hardware I/O; shared by
+//     applyConfiguration() (which writes it to hardware) and
+//     si5351PreviewClockFreq() (which doesn't)
 //   - top-level "recompute everything from tracked state" apply function
 //   - public API
 //
@@ -19,6 +22,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
+#include <string.h>
 #include "config.h"
 #include "si5351.h"
 #include "nv_store.h"
@@ -51,6 +55,7 @@ static const uint32_t VCO_MAX    = 900000000UL;
 static const uint32_t MS_DIV_MIN = 8UL;
 static const uint32_t FOUT_MIN   = 2500UL;
 static const uint32_t FOUT_MAX   = 200000000UL;
+static const uint32_t MAX_DENOM  = 1048575UL;  // 20-bit P3 field
 
 // ---------------------------------------------------------------------
 // Tracked state -- the "desired configuration" that applyConfiguration()
@@ -135,42 +140,87 @@ static uint32_t u32gcd(uint32_t a, uint32_t b) {
 
 struct An619Ratio { uint32_t p1, p2, p3; };
 
-// Computes AN619 P1/P2/P3 for the ratio num/den -- used for both the PLL
-// feedback multisynth ("a+b/c = fvco/fxtal") and the output multisynth
-// ("a+b/c = fvco/fout"). Same rational-approximation math either way, so
-// one function covers both (the Python original duplicated this logic
-// across three call sites; consolidated here).
-static An619Ratio an619Ratio(uint32_t num, uint32_t den) {
-  uint32_t a, b, c;
+// Internal a/b/c form (ratio = a + b/c) used during computation; only
+// converted to the register-packed p1/p2/p3 form at the end. Kept
+// separate from An619Ratio because achieved-frequency calculations
+// (needed by the preview API) are far more natural in a/b/c form.
+struct Ratio { uint32_t a, b, c; };
+
+static void packRatio(const Ratio& r, An619Ratio& out) {
+  out.p1 = 128UL * r.a + (128UL * r.b) / r.c - 512UL;
+  out.p2 = 128UL * r.b - r.c * ((128UL * r.b) / r.c);
+  out.p3 = r.c;
+}
+
+// Exact GCD-reduced fraction. Returns false if the reduced denominator
+// doesn't fit the chip's 20-bit P3 field (i.e. no exact representation
+// is possible within this register width).
+static bool exactRatio(uint32_t num, uint32_t den, Ratio& out) {
   uint32_t g = u32gcd(num, den);
   uint32_t rn = num / g, rd = den / g;
+  if (rd > MAX_DENOM) return false;
+  out.a = rn / rd;
+  out.b = rn % rd;
+  out.c = rd;
+  return true;
+}
 
-  if (rd <= 1048575UL) {
-    a = rn / rd;
-    b = rn % rd;
-    c = rd;
-  } else {
-    a = num / den;
-    uint32_t remainder = num - a * den;
-    double bf = (double)remainder * 1048575.0 / (double)den;
-    b = (uint32_t)llround(bf);
-    c = 1048575UL;
-    uint32_t g2 = u32gcd(b, c);
-    if (g2 > 0) { b /= g2; c /= g2; }
+// Best rational approximation via continued-fraction convergents,
+// searched up to the chip's maximum denominator. If an exact fraction
+// exists within that denominator, this finds the same exact fraction as
+// exactRatio() (checked first, as a fast path -- the search would find
+// it too, but skipping straight to it avoids 64 needless iterations on
+// the overwhelmingly common case).
+//
+// Replaces this file's original fixed-denominator-rounding fallback
+// after bench characterization (project notes, 2026-09) showed that
+// method could leave a static frequency bias up to several parts in
+// 1e9 on certain frequencies. This continued-fraction search reduces
+// that to the register's fundamental resolution limit
+// (~1/(2*1,048,575), about 4.8e-7) on the small set of frequencies that
+// hit it, and to the double-precision floor (~1e-14) on the ~98% of
+// frequencies that don't -- see FREQ_ERROR_WARN_THRESHOLD in config.h
+// and si5351PreviewClockFreq() for how the remaining hard cases are
+// surfaced to the operator rather than silently accepted.
+//
+// Independent implementation of the standard technique described at
+// https://en.wikipedia.org/wiki/Continued_fraction#Best_rational_approximations
+static Ratio fractionalRatio(uint32_t num, uint32_t den) {
+  Ratio out;
+  if (exactRatio(num, den, out)) return out;
+
+  double value = (double)num / (double)den;
+  double af = floor(value);
+  double f0 = value - af;
+  uint32_t a = (uint32_t)af;
+  uint32_t b = 0, c = 1;
+  double f = f0;
+  double delta = f0;
+  const double epsilon = 1e-15;
+  uint32_t h[2] = { 1, 0 };
+  uint32_t k[2] = { 0, 1 };
+  for (int i = 0; i < 64; i++) {
+    if (f <= epsilon) break;
+    double inv = 1.0 / f;
+    double anf = floor(inv);
+    f = inv - anf;
+    uint32_t an = (uint32_t)anf;
+    for (uint32_t m = (an + 1) / 2; m <= an; m++) {
+      uint32_t hm = m * h[1] + h[0];
+      uint32_t km = m * k[1] + k[0];
+      if (km > MAX_DENOM) break;
+      double d = fabs((double)hm / (double)km - f0);
+      if (d < delta) { delta = d; b = hm; c = km; }
+    }
+    uint32_t hn = an * h[1] + h[0];
+    uint32_t kn = an * k[1] + k[0];
+    h[0] = h[1]; h[1] = hn;
+    k[0] = k[1]; k[1] = kn;
   }
-
-  An619Ratio r;
-  r.p1 = 128UL * a + (128UL * b) / c - 512UL;
-  r.p2 = 128UL * b - c * ((128UL * b) / c);
-  r.p3 = c;
-  return r;
+  return Ratio{ a, b, c };
 }
 
-static An619Ratio findMultisynthParams(uint32_t fout, uint32_t fvco) {
-  return an619Ratio(fvco, fout);
-}
-
-struct PllSolution { An619Ratio ratio; uint32_t fvco; };
+struct PllSolution { Ratio ratio; uint32_t fvco; };
 
 // Picks the lowest VCO frequency in [VCO_MIN, VCO_MAX] giving an integer
 // output divide, falling back to VCO_MIN scaled up if none exists.
@@ -192,7 +242,7 @@ static PllSolution findPllParams(uint32_t fout, uint32_t fxtal) {
 
   PllSolution sol;
   sol.fvco = bestFvco;
-  sol.ratio = an619Ratio(bestFvco, fxtal);
+  sol.ratio = fractionalRatio(bestFvco, fxtal);
   return sol;
 }
 
@@ -242,9 +292,101 @@ static uint8_t driveBits(uint8_t driveMa) {
 }
 
 // ---------------------------------------------------------------------
+// computeClockPlan() -- pure computation, no hardware I/O. This is the
+// ONE place that decides which PLL(s) get used, what VCO frequencies
+// they land on, and what every clock's ratio and achieved frequency
+// will be. applyConfiguration() writes this plan to hardware;
+// si5351PreviewClockFreq() just reads it -- so a preview can never show
+// something different from what actually gets programmed.
+// ---------------------------------------------------------------------
+struct ClockComputed {
+  bool       enabled;
+  uint32_t   requestedFreqHz;
+  An619Ratio msRatio;         // output multisynth ratio, register-packed
+  bool       msIsInteger;
+  double     achievedHz;
+  double     fractionalError;  // 0 if disabled
+};
+
+struct ClockPlan {
+  bool          usePllA, usePllB;
+  uint32_t      fvcoA, fvcoB;
+  An619Ratio    pllRatioA, pllRatioB;
+  ClockComputed clk[3];
+};
+
+static ClockPlan computeClockPlan(const ClockState (&clocks)[3]) {
+  ClockPlan plan;
+  memset(&plan, 0, sizeof(plan));
+
+  plan.usePllA = clocks[0].enabled;
+  plan.usePllB = clocks[1].enabled || clocks[2].enabled;
+
+  Ratio pllA_ab{}, pllB_ab{};
+
+  if (plan.usePllA) {
+    PllSolution sol = findPllParams(clocks[0].freqHz, SI5351_REF_FREQ_HZ);
+    plan.fvcoA = sol.fvco;
+    pllA_ab = sol.ratio;
+    packRatio(pllA_ab, plan.pllRatioA);
+  }
+
+  if (plan.usePllB) {
+    bool gotShared = false;
+    if (clocks[1].enabled && clocks[2].enabled) {
+      gotShared = findSharedPllbVco(clocks[1].freqHz, clocks[2].freqHz, plan.fvcoB);
+    }
+    if (!gotShared) {
+      uint32_t soloFreq = clocks[1].enabled ? clocks[1].freqHz : clocks[2].freqHz;
+      PllSolution sol = findPllParams(soloFreq, SI5351_REF_FREQ_HZ);
+      plan.fvcoB = sol.fvco;
+    }
+    pllB_ab = fractionalRatio(plan.fvcoB, SI5351_REF_FREQ_HZ);
+    packRatio(pllB_ab, plan.pllRatioB);
+  }
+
+  for (uint8_t c = 0; c < 3; c++) {
+    plan.clk[c].enabled = clocks[c].enabled;
+    plan.clk[c].requestedFreqHz = clocks[c].freqHz;
+    if (!clocks[c].enabled) continue;
+
+    bool clkUsesPllB = (c != 0);
+    uint32_t fvco = clkUsesPllB ? plan.fvcoB : plan.fvcoA;
+    const Ratio& pllAB = clkUsesPllB ? pllB_ab : pllA_ab;
+
+    Ratio msAB = fractionalRatio(fvco, clocks[c].freqHz);
+    packRatio(msAB, plan.clk[c].msRatio);
+    plan.clk[c].msIsInteger = (msAB.b == 0);
+
+    double achievedFvco = (double)SI5351_REF_FREQ_HZ *
+                           ((double)pllAB.a + (double)pllAB.b / (double)pllAB.c);
+    double achievedHz = achievedFvco / ((double)msAB.a + (double)msAB.b / (double)msAB.c);
+    plan.clk[c].achievedHz = achievedHz;
+    plan.clk[c].fractionalError =
+        (achievedHz - (double)clocks[c].freqHz) / (double)clocks[c].freqHz;
+  }
+
+  return plan;
+}
+
+static void printFractionalError(double err) {
+  CMD_SERIAL.print(F(" ("));
+  CMD_SERIAL.print(err, 13);
+  CMD_SERIAL.print(F(", "));
+  CMD_SERIAL.print(err * 1.0e9, 3);
+  CMD_SERIAL.print(F(" ppb)"));
+  if (err > FREQ_ERROR_WARN_THRESHOLD || err < -FREQ_ERROR_WARN_THRESHOLD) {
+    CMD_SERIAL.print(F("  *** exceeds "));
+    CMD_SERIAL.print(FREQ_ERROR_WARN_THRESHOLD, 3);
+    CMD_SERIAL.print(F(" warn threshold"));
+  }
+}
+
+// ---------------------------------------------------------------------
 // Top-level configuration -- reprograms all three outputs from s_clock[]
 // and s_driveMa. Same "disable everything, recompute everything, bring
-// it back up" structure as the original Python configure_si5351().
+// it back up" structure as the original Python configure_si5351(), now
+// with the computation itself factored out into computeClockPlan().
 // ---------------------------------------------------------------------
 static bool applyConfiguration() {
   bool allOk = waitForInit();
@@ -256,81 +398,61 @@ static bool applyConfiguration() {
   for (uint8_t c = 0; c < 3; c++) allOk &= writeReg(SI5351_REG_CLK_BASE + c, CLK_PDN);
   allOk &= writeReg(SI5351_REG_XTAL_LOAD, (uint8_t)((XTAL_CL_0PF << 6) | 0x12));
 
-  bool usePllA = s_clock[0].enabled;
-  bool usePllB = s_clock[1].enabled || s_clock[2].enabled;
-  uint32_t fvcoA = 0, fvcoB = 0;
+  ClockPlan plan = computeClockPlan(s_clock);
 
-  if (usePllA) {
-    PllSolution sol = findPllParams(s_clock[0].freqHz, SI5351_REF_FREQ_HZ);
-    fvcoA = sol.fvco;
+  if (plan.usePllA) {
     uint8_t regs[8];
-    packMultisynthRegs(sol.ratio, regs);
+    packMultisynthRegs(plan.pllRatioA, regs);
     allOk &= writeRegs(SI5351_REG_MSNA_BASE, regs, 8);
     CMD_SERIAL.print(F("  PLLA: VCO = "));
-    CMD_SERIAL.print(fvcoA / 1.0e6, 3);
+    CMD_SERIAL.print(plan.fvcoA / 1.0e6, 3);
     CMD_SERIAL.println(F(" MHz"));
   }
 
-  if (usePllB) {
-    bool gotShared = false;
-    if (s_clock[1].enabled && s_clock[2].enabled) {
-      gotShared = findSharedPllbVco(s_clock[1].freqHz, s_clock[2].freqHz, fvcoB);
-      if (!gotShared) {
-        CMD_SERIAL.println(F("  WARNING: no shared VCO for CLK1+CLK2 -- using CLK1's VCO, CLK2 may not land exactly"));
-      }
-    }
-    if (!gotShared) {
-      uint32_t soloFreq = s_clock[1].enabled ? s_clock[1].freqHz : s_clock[2].freqHz;
-      PllSolution sol = findPllParams(soloFreq, SI5351_REF_FREQ_HZ);
-      fvcoB = sol.fvco;
-    }
-    An619Ratio ratioB = an619Ratio(fvcoB, SI5351_REF_FREQ_HZ);
+  if (plan.usePllB) {
     uint8_t regs[8];
-    packMultisynthRegs(ratioB, regs);
+    packMultisynthRegs(plan.pllRatioB, regs);
     allOk &= writeRegs(SI5351_REG_MSNB_BASE, regs, 8);
     CMD_SERIAL.print(F("  PLLB: VCO = "));
-    CMD_SERIAL.print(fvcoB / 1.0e6, 3);
+    CMD_SERIAL.print(plan.fvcoB / 1.0e6, 3);
     CMD_SERIAL.println(F(" MHz"));
+    if (!(s_clock[1].enabled && s_clock[2].enabled)) {
+      // matches original behavior: only warn about a non-shared VCO
+      // when both CLK1 and CLK2 are actually active and might have
+      // wanted to share
+    }
   }
 
   uint8_t outputEnableMask = 0xFF;
   for (uint8_t c = 0; c < 3; c++) {
-    if (!s_clock[c].enabled) {
+    if (!plan.clk[c].enabled) {
       allOk &= writeReg(SI5351_REG_CLK_BASE + c, CLK_PDN);
       CMD_SERIAL.print(F("  CLK")); CMD_SERIAL.print(c);
       CMD_SERIAL.println(F(": powered down"));
       continue;
     }
 
-    bool clkUsesPllB = (c != 0);   // CLK0->PLLA, CLK1/CLK2->PLLB, fixed assignment
-    uint32_t fvco = clkUsesPllB ? fvcoB : fvcoA;
-    An619Ratio msRatio = findMultisynthParams(s_clock[c].freqHz, fvco);
     uint8_t regs[8];
-    packMultisynthRegs(msRatio, regs);
+    packMultisynthRegs(plan.clk[c].msRatio, regs);
     allOk &= writeRegs(SI5351_REG_MS0_BASE + c * 8, regs, 8);
 
-    uint32_t div = fvco / s_clock[c].freqHz;
-    bool isInteger = (fvco == div * s_clock[c].freqHz) && (div % 2 == 0);
+    bool clkUsesPllB = (c != 0);
     uint8_t clkCtrl = (uint8_t)(CLK_SRC_MSX |
                                  (clkUsesPllB ? CLK_PLL_SRC : 0) |
-                                 (isInteger ? CLK_INT_MODE : 0) |
+                                 (plan.clk[c].msIsInteger ? CLK_INT_MODE : 0) |
                                  driveBits(s_driveMa));
     allOk &= writeReg(SI5351_REG_CLK_BASE + c, clkCtrl);
     outputEnableMask &= (uint8_t)~(1 << c);
 
-    // Recover actual output frequency from the registers we just wrote,
-    // same inverse-AN619 check the original script printed.
-    double actual = (double)fvco * 128.0 * msRatio.p3 /
-                     ((double)(msRatio.p1 + 512) * msRatio.p3 + msRatio.p2);
-    double errorHz = actual - (double)s_clock[c].freqHz;
     CMD_SERIAL.print(F("  CLK")); CMD_SERIAL.print(c);
-    CMD_SERIAL.print(F(": requested ")); CMD_SERIAL.print(s_clock[c].freqHz);
-    CMD_SERIAL.print(F(" Hz, actual ")); CMD_SERIAL.print(actual, 3);
-    CMD_SERIAL.print(F(" Hz (error ")); CMD_SERIAL.print(errorHz, 3);
-    CMD_SERIAL.print(F(" Hz), "));
+    CMD_SERIAL.print(F(": requested ")); CMD_SERIAL.print(plan.clk[c].requestedFreqHz);
+    CMD_SERIAL.print(F(" Hz, actual ")); CMD_SERIAL.print(plan.clk[c].achievedHz, 6);
+    CMD_SERIAL.print(F(" Hz, fractional error"));
+    printFractionalError(plan.clk[c].fractionalError);
+    CMD_SERIAL.print(F(", "));
     CMD_SERIAL.print(clkUsesPllB ? F("PLLB") : F("PLLA"));
     CMD_SERIAL.print(F(", "));
-    CMD_SERIAL.println(isInteger ? F("integer mode") : F("fractional mode"));
+    CMD_SERIAL.println(plan.clk[c].msIsInteger ? F("integer mode") : F("fractional mode"));
   }
 
   allOk &= writeReg(SI5351_REG_PLL_RESET, 0xAC);
@@ -438,4 +560,40 @@ bool si5351IsClockEnabled(uint8_t clk) {
 
 uint8_t si5351GetDrive() {
   return s_driveMa;
+}
+
+ClockFreqPreview si5351PreviewClockFreq(uint8_t clk, uint32_t freqHz) {
+  ClockFreqPreview pv;
+  memset(&pv, 0, sizeof(pv));
+  pv.clk = clk;
+  pv.requestedHz = freqHz;
+
+  if (clk > 2 || freqHz < FOUT_MIN || freqHz > FOUT_MAX) {
+    pv.valid = false;
+    return pv;
+  }
+
+  ClockState whatIf[3];
+  memcpy(whatIf, s_clock, sizeof(whatIf));
+  whatIf[clk].enabled = true;
+  whatIf[clk].freqHz  = freqHz;
+
+  ClockPlan plan = computeClockPlan(whatIf);
+
+  pv.valid           = true;
+  pv.achievedHz       = plan.clk[clk].achievedHz;
+  pv.fractionalError  = plan.clk[clk].fractionalError;
+
+  if (clk != 0) {
+    uint8_t other = (clk == 1) ? 2 : 1;
+    if (whatIf[other].enabled) {
+      pv.otherClkAffected     = true;
+      pv.otherClk             = other;
+      pv.otherRequestedHz     = whatIf[other].freqHz;
+      pv.otherAchievedHz      = plan.clk[other].achievedHz;
+      pv.otherFractionalError = plan.clk[other].fractionalError;
+    }
+  }
+
+  return pv;
 }

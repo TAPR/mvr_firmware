@@ -18,6 +18,16 @@
 // still needs to be present for the #include to resolve when building
 // for RP2040.
 //
+// 20260917.2: minor change to frequency error message in menu.cpp.
+// No substantive changes.
+// 20260917.1: no changes to this file itself -- the Si5351 fractional-N
+// algorithm and menu confirmation-flow changes for this version are
+// entirely internal to si5351.cpp/menu.cpp; setup()/loop() didn't need
+// to change. Bumped FIRMWARE_VERSION in config.h anyway since that's
+// the single source of truth this file's boot banner and menu both
+// print from -- see config.h's version-history comment for what
+// changed.
+//
 #include <Arduino.h>
 #include "config.h"
 #include "gnss.h"

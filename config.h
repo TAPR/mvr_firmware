@@ -20,7 +20,17 @@
 // when a given board's firmware was actually built, version bump or
 // not -- useful for telling apart boards flashed at different points
 // during development even between version bumps.
-#define FIRMWARE_VERSION "20260903.1"
+//
+// 20260917.2: change wording frequency error message in menu.cpp.
+// No substantive changes.
+// 20260917.1: replaced the Si5351 PLL feedback divider's fixed-
+// denominator rounding fallback with a continued-fraction best-
+// rational-approximation search (si5351.cpp, fractionalRatio()), and
+// added a preview-and-confirm step to the menu's frequency-entry flow
+// (menu.cpp) -- see FREQ_ERROR_WARN_THRESHOLD below and si5351.h's
+// si5351PreviewClockFreq(). Bench-validated; see project notes for the
+// full analysis and test results.
+#define FIRMWARE_VERSION "20260917.2"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments
@@ -100,6 +110,21 @@
 #define SI5351_DEFAULT_CLK1_ENABLED 0        // off by default -- reduces radiated emissions from an
 #define SI5351_DEFAULT_CLK2_ENABLED 0        // output most users won't be using
 #define SI5351_DEFAULT_DRIVE_MA 8            // boot default drive strength
+
+// Fractional-N accuracy warning threshold, as a fractional frequency
+// error (dimensionless, e.g. 1e-11 = 10 ppt). Derived from an exhaustive
+// bench-validated analysis of the continued-fraction algorithm's actual
+// achievable error across every 1 Hz-resolution frequency from 500 kHz
+// to 30 MHz (see project notes): ~98% of all such frequencies land
+// below 1e-11 with the continued-fraction algorithm, so a value at this
+// threshold flags only the rare, specific frequencies that hit the
+// Si5351's fundamental 20-bit register resolution limit -- these are
+// isolated single-Hz points, not bands, and shifting the target by even
+// 1 Hz normally clears the warning entirely. The menu shows this
+// preview-and-confirm before committing any new CLK frequency; it does
+// not block the choice, since the operator may have a specific reason
+// to accept it anyway.
+#define FREQ_ERROR_WARN_THRESHOLD  1.0e-11
 
 // ---------------------------------------------------------------------
 // Loop-lock monitor (PLL_LOCK signal on PLL_LOCK_PIN)
