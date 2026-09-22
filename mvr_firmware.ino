@@ -1,5 +1,5 @@
 //
-// mvr_firmware.ino — MVR GPSDO A2 firmware, top-level setup()/loop().
+// mvr_firmware.ino — MVR GPSDO B firmware, top-level setup()/loop().
 //
 // Combines GNSS module configuration (gnss.*), Si5351 synthesizer control
 // (si5351.*), a runtime serial menu for the Si5351 (menu.*), and device
@@ -18,8 +18,6 @@
 // still needs to be present for the #include to resolve when building
 // for RP2040.
 //
-// 20260917.2: minor change to frequency error message in menu.cpp.
-// No substantive changes.
 // 20260917.1: no changes to this file itself -- the Si5351 fractional-N
 // algorithm and menu confirmation-flow changes for this version are
 // entirely internal to si5351.cpp/menu.cpp; setup()/loop() didn't need
@@ -27,6 +25,17 @@
 // the single source of truth this file's boot banner and menu both
 // print from -- see config.h's version-history comment for what
 // changed.
+//
+// 20260922.1: again no changes to this file -- bench test program
+// completion and its findings (corrected worst-case bound, the proven
+// exact-multiple-of-10-Hz guarantee, and denominator maximization
+// showing no practical benefit) are all in si5351.h/si5351.cpp/menu.cpp
+// and config.h's version-history comment.
+//
+// 20260922.2: again no changes to this file -- the >112.5MHz Multisynth
+// divider fix and the A2->B hardware-revision rename are both in
+// si5351.cpp/si5351.h/menu.cpp/config.h. See config.h's version-history
+// comment.
 //
 #include <Arduino.h>
 #include "config.h"

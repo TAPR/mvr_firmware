@@ -176,12 +176,15 @@ static bool exactRatio(uint32_t num, uint32_t den, Ratio& out) {
 // after bench characterization (project notes, 2026-09) showed that
 // method could leave a static frequency bias up to several parts in
 // 1e9 on certain frequencies. This continued-fraction search reduces
-// that to the register's fundamental resolution limit
-// (~1/(2*1,048,575), about 4.8e-7) on the small set of frequencies that
-// hit it, and to the double-precision floor (~1e-14) on the ~98% of
-// frequencies that don't -- see FREQ_ERROR_WARN_THRESHOLD in config.h
-// and si5351PreviewClockFreq() for how the remaining hard cases are
-// surfaced to the operator rather than silently accepted.
+// that to the register's fundamental resolution limit -- worst case
+// ~7.6e-9 fractional frequency error, occurring on roughly 1 in 380,000
+// achievable 1 Hz-resolution frequencies across the full 500 kHz-30 MHz
+// operating range -- and to the double-precision floor (~1e-14) on
+// everything else. See FREQ_ERROR_WARN_THRESHOLD in config.h and
+// si5351PreviewClockFreq() for how the remaining hard cases are
+// surfaced to the operator rather than silently accepted, and
+// si5351.h's header comment for the proven exact-multiple-of-10-Hz
+// guarantee that avoids this entirely.
 //
 // Independent implementation of the standard technique described at
 // https://en.wikipedia.org/wiki/Continued_fraction#Best_rational_approximations
@@ -222,22 +225,61 @@ static Ratio fractionalRatio(uint32_t num, uint32_t den) {
 
 struct PllSolution { Ratio ratio; uint32_t fvco; };
 
+// Above VCO_MAX/MS_DIV_MIN (900 MHz / 8 = 112.5 MHz), AN619 restricts the
+// output Multisynth divider to exactly 4, 6, or 8 -- not a free integer
+// search -- and above that point the output frequency effectively sets
+// the VCO:
+//   112.5 MHz < fout <= 150 MHz  -> div = 6  (fvco = 6*fout, in [675M,900M])
+//   150 MHz   < fout <= FOUT_MAX -> div = 4  (fvco = 4*fout, in [600M,800M]
+//                                              for FOUT_MAX=200MHz)
+// The general search below already only accepts div>=MS_DIV_MIN(8) for
+// fout<=112.5MHz, which is correct there; above that threshold no such
+// div exists in [VCO_MIN,VCO_MAX] at all, which is what this special
+// case is for. See project notes (Si5351A fractional-N report) for the
+// bench finding that motivated this.
+static const uint32_t HIGH_FREQ_DIV_THRESHOLD = VCO_MAX / MS_DIV_MIN;  // 112,500,000
+
+static bool restrictedHighFreqDiv(uint32_t fout, uint32_t& divOut) {
+  if (fout <= HIGH_FREQ_DIV_THRESHOLD) return false;
+  divOut = (fout <= 150000000UL) ? 6UL : 4UL;
+  return true;
+}
+
+// True iff (a,b,c) is a legal AN619 Multisynth ratio: exactly 4 or 6 (no
+// fraction), or >=8 (any fraction, integer or not). Note 5 and 7 are
+// NOT valid even as plain integers -- the chip's Multisynth divider
+// simply doesn't support them. Checked on every computed output-stage
+// ratio (not just the PLL-feedback-driving clock) because a PLLB-sharing
+// mismatch can in principle leave the non-driving clock with an invalid
+// ratio even when its own target frequency is below 112.5 MHz.
+static bool isValidMultisynthRatio(const Ratio& r) {
+  if (r.a == 4 || r.a == 6) return (r.b == 0);
+  return (r.a >= 8);
+}
+
 // Picks the lowest VCO frequency in [VCO_MIN, VCO_MAX] giving an integer
 // output divide, falling back to VCO_MIN scaled up if none exists.
 static PllSolution findPllParams(uint32_t fout, uint32_t fxtal) {
-  uint32_t bestFvco = 0;
-  uint32_t divLo = (VCO_MIN + fout - 1) / fout;  // ceil
-  uint32_t divHi = VCO_MAX / fout;               // floor
+  uint32_t bestFvco;
+  uint32_t restrictedDiv;
 
-  for (uint32_t div = divLo; div <= divHi; div++) {
-    if (div >= MS_DIV_MIN) {
-      uint32_t fvco = fout * div;
-      if (fvco >= VCO_MIN && fvco <= VCO_MAX) { bestFvco = fvco; break; }
+  if (restrictedHighFreqDiv(fout, restrictedDiv)) {
+    bestFvco = fout * restrictedDiv;
+  } else {
+    bestFvco = 0;
+    uint32_t divLo = (VCO_MIN + fout - 1) / fout;  // ceil
+    uint32_t divHi = VCO_MAX / fout;               // floor
+
+    for (uint32_t div = divLo; div <= divHi; div++) {
+      if (div >= MS_DIV_MIN) {
+        uint32_t fvco = fout * div;
+        if (fvco >= VCO_MIN && fvco <= VCO_MAX) { bestFvco = fvco; break; }
+      }
     }
-  }
-  if (bestFvco == 0) {
-    bestFvco = fout * divLo;
-    if (bestFvco < VCO_MIN) bestFvco = VCO_MIN;
+    if (bestFvco == 0) {
+      bestFvco = fout * divLo;
+      if (bestFvco < VCO_MIN) bestFvco = VCO_MIN;
+    }
   }
 
   PllSolution sol;
@@ -250,7 +292,18 @@ static PllSolution findPllParams(uint32_t fout, uint32_t fxtal) {
 // BOTH f1 and f2 (CLK1 and CLK2 sharing PLLB). Uses uint64_t throughout --
 // f1*f2 can reach ~4x10^16, well past uint32_t range, before the LCM
 // reduction brings it back down.
+//
+// Declines to even attempt sharing whenever either target is above
+// HIGH_FREQ_DIV_THRESHOLD: above that point the output frequency pins
+// the VCO to one of only two possible values (via the restricted-divider
+// rule above), so genuine sharing is only possible by rare coincidence,
+// and searching for it isn't worth the complexity. The caller's solo
+// fallback (findPllParams(), now restricted-divider-aware) handles the
+// driving clock correctly either way; isValidMultisynthRatio() catches
+// the case where the other, non-driving clock ends up incompatible.
 static bool findSharedPllbVco(uint32_t f1, uint32_t f2, uint32_t& outFvco) {
+  if (f1 > HIGH_FREQ_DIV_THRESHOLD || f2 > HIGH_FREQ_DIV_THRESHOLD) return false;
+
   uint32_t g = u32gcd(f1, f2);
   uint64_t lcmF = (uint64_t)f1 * (uint64_t)f2 / g;
 
@@ -304,6 +357,9 @@ struct ClockComputed {
   uint32_t   requestedFreqHz;
   An619Ratio msRatio;         // output multisynth ratio, register-packed
   bool       msIsInteger;
+  bool       dividerValid;     // false if msRatio violates AN619's Multisynth
+                                // constraint (a must be exactly 4, 6, or >=8);
+                                // see isValidMultisynthRatio() above
   double     achievedHz;
   double     fractionalError;  // 0 if disabled
 };
@@ -357,6 +413,7 @@ static ClockPlan computeClockPlan(const ClockState (&clocks)[3]) {
     Ratio msAB = fractionalRatio(fvco, clocks[c].freqHz);
     packRatio(msAB, plan.clk[c].msRatio);
     plan.clk[c].msIsInteger = (msAB.b == 0);
+    plan.clk[c].dividerValid = isValidMultisynthRatio(msAB);
 
     double achievedFvco = (double)SI5351_REF_FREQ_HZ *
                            ((double)pllAB.a + (double)pllAB.b / (double)pllAB.c);
@@ -453,6 +510,14 @@ static bool applyConfiguration() {
     CMD_SERIAL.print(clkUsesPllB ? F("PLLB") : F("PLLA"));
     CMD_SERIAL.print(F(", "));
     CMD_SERIAL.println(plan.clk[c].msIsInteger ? F("integer mode") : F("fractional mode"));
+    if (!plan.clk[c].dividerValid) {
+      CMD_SERIAL.print(F("  *** WARNING: CLK")); CMD_SERIAL.print(c);
+      CMD_SERIAL.println(F(" divide ratio is not a value the Si5351 actually supports"));
+      CMD_SERIAL.println(F("  *** (AN619 requires exactly 4, 6, or >=8) -- this usually means it's"));
+      CMD_SERIAL.println(F("  *** sharing PLLB with another active clock at an incompatible"));
+      CMD_SERIAL.println(F("  *** frequency above 112.5 MHz. Actual hardware output is undefined;"));
+      CMD_SERIAL.println(F("  *** reconfigure via the menu."));
+    }
   }
 
   allOk &= writeReg(SI5351_REG_PLL_RESET, 0xAC);
@@ -583,6 +648,7 @@ ClockFreqPreview si5351PreviewClockFreq(uint8_t clk, uint32_t freqHz) {
   pv.valid           = true;
   pv.achievedHz       = plan.clk[clk].achievedHz;
   pv.fractionalError  = plan.clk[clk].fractionalError;
+  pv.dividerValid     = plan.clk[clk].dividerValid;
 
   if (clk != 0) {
     uint8_t other = (clk == 1) ? 2 : 1;
@@ -592,6 +658,7 @@ ClockFreqPreview si5351PreviewClockFreq(uint8_t clk, uint32_t freqHz) {
       pv.otherRequestedHz     = whatIf[other].freqHz;
       pv.otherAchievedHz      = plan.clk[other].achievedHz;
       pv.otherFractionalError = plan.clk[other].fractionalError;
+      pv.otherDividerValid    = plan.clk[other].dividerValid;
     }
   }
 

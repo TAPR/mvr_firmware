@@ -1,6 +1,6 @@
 #pragma once
 //
-// config.h — compile-time configuration for the MVR GPSDO A2 firmware.
+// config.h — compile-time configuration for the MVR GPSDO B firmware.
 //
 // This is the single place to edit board pins, GNSS behavior, Si5351
 // defaults, and UX timing.  Everything here is a #define so the values are
@@ -21,8 +21,6 @@
 // not -- useful for telling apart boards flashed at different points
 // during development even between version bumps.
 //
-// 20260917.2: change wording frequency error message in menu.cpp.
-// No substantive changes.
 // 20260917.1: replaced the Si5351 PLL feedback divider's fixed-
 // denominator rounding fallback with a continued-fraction best-
 // rational-approximation search (si5351.cpp, fractionalRatio()), and
@@ -30,13 +28,41 @@
 // (menu.cpp) -- see FREQ_ERROR_WARN_THRESHOLD below and si5351.h's
 // si5351PreviewClockFreq(). Bench-validated; see project notes for the
 // full analysis and test results.
-#define FIRMWARE_VERSION "20260917.2"
+//
+// 20260922.1: bench test program complete (10 runs, TimePod/53100A vs
+// ULN and HP 5071A cesium references). Findings folded in: (1) the
+// continued-fraction algorithm's worst-case bound corrected to ~7.6e-9
+// (an earlier analysis pass had a units error inflating this to
+// 4.5e-7 -- caught and fixed before this bench validation); (2) proven
+// exact-multiple-of-10-Hz guarantee added to si5351.h and surfaced in
+// the menu as user guidance; (3) tested a denominator-maximization idea
+// for spur mitigation and found no practical benefit, in this
+// implementation -- small (2-5 dB) differences observed at a few
+// offsets showed no consistent direction and stayed >100 dB below
+// carrier, so production intentionally does not rescale denominators.
+// Full report available in project notes.
+//
+// 20260922.2: (1) fixed a real bug found while widening the report's
+// verified-frequency range past 30 MHz: above 112.5 MHz (900 MHz VCO /
+// 8), AN619 restricts the Si5351's output Multisynth divider to exactly
+// 4, 6, or 8, not a free integer search -- the previous find_pll_params()
+// logic didn't know this and could silently select an invalid divider
+// (confirmed to affect ~34% of the 112.5-200 MHz range, reachable via
+// the existing FOUT_MAX=200MHz menu range). findPllParams() now handles
+// this correctly as an explicit case, every computed output-stage ratio
+// is validated against the full AN619 rule (isValidMultisynthRatio()),
+// and the menu hard-rejects (not just warns on) any frequency that would
+// produce an invalid divider -- most likely a PLLB-sharing mismatch
+// between CLK1/CLK2 when one needs >112.5 MHz. See si5351.h and
+// ClockFreqPreview::dividerValid. (2) renamed all "A2" hardware-revision
+// references to "B", reflecting the production board revision.
+#define FIRMWARE_VERSION "20260922.2"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments
 // ---------------------------------------------------------------------
 // XIAO D0-D10 numbering, consistent across the SAMD21, ESP32C3, and
-// RP2040 module variants of the MVR A2 board (confirmed identical
+// RP2040 module variants of the MVR B board (confirmed identical
 // physical pin mapping for UART and I2C across all three).
 //
 //   D6 (TX) -> GPS02-UBX pin 12 (RXD)
@@ -115,7 +141,7 @@
 // error (dimensionless, e.g. 1e-11 = 10 ppt). Derived from an exhaustive
 // bench-validated analysis of the continued-fraction algorithm's actual
 // achievable error across every 1 Hz-resolution frequency from 500 kHz
-// to 30 MHz (see project notes): ~98% of all such frequencies land
+// to 30 MHz (see project notes): 99.97% of all such frequencies land
 // below 1e-11 with the continued-fraction algorithm, so a value at this
 // threshold flags only the rare, specific frequencies that hit the
 // Si5351's fundamental 20-bit register resolution limit -- these are
@@ -123,7 +149,9 @@
 // 1 Hz normally clears the warning entirely. The menu shows this
 // preview-and-confirm before committing any new CLK frequency; it does
 // not block the choice, since the operator may have a specific reason
-// to accept it anyway.
+// to accept it anyway. NOTE: any frequency that is an exact multiple of
+// 10 Hz is PROVEN to always synthesize exactly (see si5351.h) -- the
+// menu suggests this as a remedy whenever the warning fires.
 #define FREQ_ERROR_WARN_THRESHOLD  1.0e-11
 
 // ---------------------------------------------------------------------

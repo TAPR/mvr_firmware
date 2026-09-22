@@ -1,6 +1,6 @@
 #pragma once
 //
-// si5351.h — Si5351A clock generator driver for the MVR GPSDO A2 firmware.
+// si5351.h — Si5351A clock generator driver for the MVR GPSDO B firmware.
 //
 // Ported from mvr_synth_config.py (AN619 register math, reimplemented
 // independently per that script's own header notes). The Linux i2c-dev
@@ -25,11 +25,55 @@
 // characterization showed the fixed-denominator method could leave a
 // static frequency bias up to several parts in 1e9 on certain
 // frequencies; the continued-fraction search reduces that to the
-// register's fundamental resolution limit on ~98% of achievable
-// frequencies (see project notes for the full analysis). A small number
-// of isolated, individually-identifiable frequencies still hit that
-// hardware floor regardless of algorithm -- see si5351PreviewClockFreq()
-// and FREQ_ERROR_WARN_THRESHOLD in config.h.
+// register's fundamental resolution limit (worst case ~7.6e-9 across
+// the full 500 kHz-30 MHz operating range, affecting roughly 1 in
+// 380,000 achievable 1 Hz-resolution frequencies), and to the double-
+// precision floor (~1e-14) on everything else -- see
+// si5351PreviewClockFreq() and FREQ_ERROR_WARN_THRESHOLD in config.h.
+//
+// Proven exact-frequency guarantee: because the reference is fixed at
+// exactly 10,000,000 Hz (= 2^7 x 5^7), any target frequency that is
+// itself an exact multiple of 10 Hz is GUARANTEED to synthesize with
+// zero fractional-N error -- not just very small, but exact to the
+// full precision of the chip's registers. This follows because the PLL
+// feedback ratio's true denominator is always a divisor of 10,000,000,
+// and multiplying a multiple-of-10 target by any integer divider keeps
+// that factor of 10 intact, which caps the true denominator at
+// 1,000,000 -- safely under the chip's 1,048,575 register limit, so
+// the exact-fraction branch always fires. Verified exhaustively against
+// every multiple of 10 Hz from 500 kHz to 30 MHz (2,950,001 frequencies,
+// 100% exact). This is the simplest actionable guidance for users: pick
+// frequencies to the nearest 10 Hz for a provable accuracy guarantee.
+// See project notes for the full derivation and bench validation.
+//
+// Denominator-placement testing: a separate hypothesis -- that
+// deliberately rescaling an already-exact fraction to a larger
+// denominator might push any register-toggle-driven spur further from
+// the carrier -- was bench-tested (variant D in the test firmware) and
+// found to make no practical difference, in this implementation. Small
+// (2-5 dB) differences were observed at a few offsets between the
+// rescaled and un-rescaled configurations, but without consistent
+// directionality (elevated at some offsets, reduced at others) -- more
+// consistent with ordinary measurement variability than a systematic
+// effect -- and all more than 100 dB below carrier regardless.
+// Production deliberately does NOT rescale denominators as a result --
+// the existing exact/minimal-denominator behavior (exactRatio() in
+// si5351.cpp) is the validated, correct choice as-is. Note this
+// hardware's own noise floor may be masking a real effect a lower-noise
+// clock source would reveal; see project notes (Si5351A fractional-N
+// report) for the full analysis and that qualifier.
+//
+// Output-frequency divider restriction (>112.5 MHz): AN619 restricts
+// the output Multisynth divider to exactly 4, 6, or 8 above 112.5 MHz
+// (900 MHz VCO / 8) -- not a free integer search. The original
+// find_pll_params()-style search silently produced invalid divider
+// values there (confirmed to affect ~34% of the 112.5-200 MHz range in
+// bench analysis); findPllParams() now handles this as an explicit
+// special case (restrictedHighFreqDiv() in si5351.cpp), and every
+// computed output-stage ratio is checked against the full AN619 rule
+// (isValidMultisynthRatio()) since a PLLB-sharing mismatch can in
+// principle leave the non-driving clock invalid even below 112.5 MHz.
+// See ClockFreqPreview::dividerValid below.
 //
 #include <Arduino.h>
 
@@ -80,6 +124,10 @@ struct ClockFreqPreview {
   uint32_t requestedHz;
   double   achievedHz;          // what the actual register values would produce
   double   fractionalError;     // (achievedHz - requestedHz) / requestedHz
+  bool     dividerValid;        // false if the resulting Multisynth ratio isn't one the Si5351
+                                 // actually supports (AN619 requires exactly 4, 6, or >=8) --
+                                 // when false, achievedHz/fractionalError are not meaningful,
+                                 // since real hardware behavior for an invalid ratio is undefined
 
   // CLK1 and CLK2 share PLLB, so changing one can shift the OTHER's
   // achieved frequency too, if it's also enabled -- these fields are
@@ -89,6 +137,7 @@ struct ClockFreqPreview {
   uint32_t otherRequestedHz;
   double   otherAchievedHz;
   double   otherFractionalError;
+  bool     otherDividerValid;   // same caveat as dividerValid, for the other clock
 };
 
 // Computes what si5351SetClockFreq(clk, freqHz) WOULD produce, without

@@ -1,7 +1,7 @@
 #pragma once
 //
 // gnss.h — GPS02-UBX (u-blox M10) configuration and status monitoring for
-// the MVR GPSDO A2 firmware.
+// the MVR GPSDO B firmware.
 //
 // Ported from mvr_gnss_config.py / poll_tp5.py / reset_tp5.py (the RPi Hat
 // software).  Configuration values (timepulse frequency, C/N0 filter

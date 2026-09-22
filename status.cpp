@@ -281,7 +281,7 @@ void statusInit() {
 }
 
 void statusPrintVersion() {
-  CMD_SERIAL.print(F("=== MVR GPSDO A2 Firmware v"));
+  CMD_SERIAL.print(F("=== MVR GPSDO B Firmware v"));
   CMD_SERIAL.print(F(FIRMWARE_VERSION));
   CMD_SERIAL.print(F(" (built "));
   CMD_SERIAL.print(F(__DATE__));
