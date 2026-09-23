@@ -37,6 +37,12 @@
 // si5351.cpp/si5351.h/menu.cpp/config.h. See config.h's version-history
 // comment.
 //
+// 20260922.3: loop() reordered -- gnssPollNmea() now runs after the menu
+// wake/poll logic instead of before it, and takes the resulting
+// menuActive as a parameter, so the new NMEA-passthrough feature (see
+// config.h's version-history comment) can gate its echo on this
+// iteration's actual menu state rather than last iteration's.
+//
 #include <Arduino.h>
 #include "config.h"
 #include "gnss.h"
@@ -73,8 +79,6 @@ void setup() {
 }
 
 void loop() {
-  gnssPollNmea();
-
   bool menuActive = menuIsActive();
   if (menuActive) {
     menuPoll();
@@ -84,5 +88,6 @@ void loop() {
     menuActive = menuIsActive();  // may have just woken
   }
 
+  gnssPollNmea(menuActive);
   statusPoll(menuActive);
 }

@@ -376,11 +376,17 @@ bool gnssConfigureWithRetry() {
 static GnssStatus s_status = { false, 0, 0, 0 };
 static char       s_lineBuf[96];
 static uint8_t    s_lineLen = 0;
+static bool       s_passthroughEnabled = false;  // runtime-only, session-only -- see gnss.h
 
 // line is mutable and NUL-terminated, no trailing CR/LF.  Mutated in place
 // by strtok() -- any use of the raw text (checksum check, passthrough
 // echo) happens before tokenizing.
-static void handleNmeaLine(char* line) {
+//
+// menuActive suppresses the echo -- not just the periodic status line --
+// so a passthrough session doesn't scroll NMEA text through the menu
+// prompt while the operator is trying to read/type it. Internal fix/sat-
+// count parsing below is unaffected either way.
+static void handleNmeaLine(char* line, bool menuActive) {
   const char* star = strchr(line, '*');
   bool checksumOk = false;
   if (line[0] == '$' && star != nullptr) {
@@ -390,9 +396,9 @@ static void handleNmeaLine(char* line) {
     checksumOk = (calc == given);
   }
 
-#ifdef NMEA_PASSTHROUGH
-  CMD_SERIAL.println(line);  // forward raw text regardless of checksum result
-#endif
+  if (s_passthroughEnabled && !menuActive) {
+    CMD_SERIAL.println(line);  // forward raw text regardless of checksum result
+  }
 
   if (!checksumOk) return;
   // Standard 2-character talker ID ($GP.../$GN...), so the sentence type
@@ -414,13 +420,13 @@ static void handleNmeaLine(char* line) {
   s_status.lastUpdateMs  = millis();
 }
 
-void gnssPollNmea() {
+void gnssPollNmea(bool menuActive) {
   while (GNSS_SERIAL.available()) {
     char c = (char)GNSS_SERIAL.read();
     if (c == '\r') continue;
     if (c == '\n') {
       s_lineBuf[s_lineLen] = '\0';
-      if (s_lineLen > 0) handleNmeaLine(s_lineBuf);
+      if (s_lineLen > 0) handleNmeaLine(s_lineBuf, menuActive);
       s_lineLen = 0;
     } else if (s_lineLen < sizeof(s_lineBuf) - 1) {
       s_lineBuf[s_lineLen++] = c;
@@ -428,6 +434,14 @@ void gnssPollNmea() {
       s_lineLen = 0;  // overflow guard: drop the line, resync on the next '\n'
     }
   }
+}
+
+void gnssSetPassthrough(bool enable) {
+  s_passthroughEnabled = enable;
+}
+
+bool gnssIsPassthroughEnabled() {
+  return s_passthroughEnabled;
 }
 
 GnssStatus gnssGetStatus() {

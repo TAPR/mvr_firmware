@@ -4,8 +4,9 @@
 //
 // This is the single place to edit board pins, GNSS behavior, Si5351
 // defaults, and UX timing.  Everything here is a #define so the values are
-// baked in at compile time -- there is no runtime GNSS reconfiguration in
-// this sketch (only the Si5351 gets a runtime menu; see menu.h).
+// baked in at compile time -- there is no runtime UBX reconfiguration of
+// the GNSS module in this sketch (only the Si5351 and the NMEA passthrough
+// on/off state get runtime menu control; see menu.h).
 //
 
 // ---------------------------------------------------------------------
@@ -56,7 +57,19 @@
 // between CLK1/CLK2 when one needs >112.5 MHz. See si5351.h and
 // ClockFreqPreview::dividerValid. (2) renamed all "A2" hardware-revision
 // references to "B", reflecting the production board revision.
-#define FIRMWARE_VERSION "20260922.2"
+//
+// 20260922.3: added a runtime-toggleable raw NMEA passthrough (menu
+// option), replacing the old compile-time NMEA_PASSTHROUGH define. While
+// enabled and the menu is closed, CMD_SERIAL carries a clean stream of
+// exactly what the GNSS module sends on UART -- no periodic status line,
+// no lock/GPS transition events -- so it can be piped to an NMEA
+// consumer. Pressing any key pauses the stream and opens the menu, same
+// wake gesture as always; passthrough resumes automatically on menu exit
+// or timeout unless turned off from the menu. Session-only by design --
+// does not persist across a reboot. See gnss.h/.cpp (gnssSetPassthrough(),
+// gnssIsPassthroughEnabled()), status.cpp (printEvents() suppression),
+// and menu.cpp (new toggle option).
+#define FIRMWARE_VERSION "20260922.3"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments
@@ -115,11 +128,12 @@
                                              // start sending it commands -- bumped up from 300ms after
                                              // real hardware showed non-responses at the shorter delay
 
-// Uncomment to forward raw NMEA lines to CMD_SERIAL instead of/alongside
-// the periodic formatted status line (formatted status line is suppressed
-// while this is defined -- see main sketch).  Internal fix/sat-count
-// parsing keeps running either way.
-// #define NMEA_PASSTHROUGH        1
+// Raw NMEA passthrough (streaming everything the GNSS module sends on
+// UART out to CMD_SERIAL) is now a runtime menu toggle rather than a
+// compile-time define -- see gnssSetPassthrough()/gnssIsPassthroughEnabled()
+// in gnss.h and the menu option in menu.cpp. Off by default at every boot;
+// there is no #define here to flip anymore. Internal fix/sat-count parsing
+// (gnssGetStatus()) keeps running regardless of whether passthrough is on.
 
 // ---------------------------------------------------------------------
 // Si5351A synthesizer configuration

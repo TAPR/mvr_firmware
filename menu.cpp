@@ -23,6 +23,7 @@
 #include "menu.h"
 #include "si5351.h"
 #include "status.h"
+#include "gnss.h"
 
 enum class MenuState : uint8_t { IDLE, ROOT, AWAIT_FREQ, AWAIT_FREQ_CONFIRM, AWAIT_DRIVE, AWAIT_CONTINUE };
 
@@ -55,7 +56,10 @@ static void printRoot() {
   CMD_SERIAL.println(F("  5) Show this menu again"));
   CMD_SERIAL.println(F("  6) Show lock history"));
   CMD_SERIAL.println(F("  7) Restore compile-time defaults (overwrites saved config)"));
-  CMD_SERIAL.println(F("  8) Exit menu"));
+  CMD_SERIAL.print(F("  8) Toggle raw NMEA passthrough (currently "));
+  CMD_SERIAL.print(gnssIsPassthroughEnabled() ? F("ON") : F("OFF"));
+  CMD_SERIAL.println(F(") -- session only, not saved"));
+  CMD_SERIAL.println(F("  9) Exit menu"));
   CMD_SERIAL.print(F("> "));
 }
 
@@ -67,7 +71,11 @@ static void enterRoot() {
 
 static void exitMenu() {
   s_state = MenuState::IDLE;
-  CMD_SERIAL.println(F("Exiting menu, back to normal status output.\n"));
+  if (gnssIsPassthroughEnabled()) {
+    CMD_SERIAL.println(F("Exiting menu, resuming NMEA passthrough.\n"));
+  } else {
+    CMD_SERIAL.println(F("Exiting menu, back to normal status output.\n"));
+  }
 }
 
 bool menuIsActive() {
@@ -114,6 +122,13 @@ static void handleRootSelection(const char* line) {
       printRoot();
       break;
     case 8:
+      gnssSetPassthrough(!gnssIsPassthroughEnabled());
+      CMD_SERIAL.print(F("NMEA passthrough turned "));
+      CMD_SERIAL.print(gnssIsPassthroughEnabled() ? F("ON") : F("OFF"));
+      CMD_SERIAL.println(F(" (this session only)."));
+      printRoot();
+      break;
+    case 9:
       exitMenu();
       break;
     default:
@@ -245,7 +260,11 @@ void menuPoll() {
   if (s_state == MenuState::IDLE) return;
 
   if ((millis() - s_lastActivityMs) > MENU_IDLE_TIMEOUT_MS) {
-    CMD_SERIAL.println(F("\nMenu timed out, back to normal status output.\n"));
+    if (gnssIsPassthroughEnabled()) {
+      CMD_SERIAL.println(F("\nMenu timed out, resuming NMEA passthrough.\n"));
+    } else {
+      CMD_SERIAL.println(F("\nMenu timed out, back to normal status output.\n"));
+    }
     s_state = MenuState::IDLE;
     return;
   }

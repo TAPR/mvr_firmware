@@ -1,11 +1,13 @@
 #pragma once
 //
-// menu.h — interactive serial menu for runtime Si5351 control.
+// menu.h — interactive serial menu for runtime Si5351 control, plus the
+// NMEA passthrough on/off toggle (see gnss.h).
 //
-// Normal operation prints periodic status (see main sketch); any
-// keypress on CMD_SERIAL wakes this menu. Selections apply immediately
-// via the si5351 module and return to the menu, which times out back to
-// normal run mode after MENU_IDLE_TIMEOUT_MS of inactivity.
+// Normal operation prints periodic status, or a raw NMEA stream if
+// passthrough is on (see main sketch); any keypress on CMD_SERIAL wakes
+// this menu either way. Selections apply immediately and return to the
+// menu, which times out back to normal run mode (whichever of the two
+// that currently is) after MENU_IDLE_TIMEOUT_MS of inactivity.
 //
 #include <Arduino.h>
 

@@ -27,10 +27,14 @@ void statusInit();
 void statusPrintVersion();
 
 // Call every loop() iteration. Updates PLL lock detection and the LED
-// color every time; prints immediate GPS/PLL lock-gained and lock-lost
-// events on transitions; and, when menuActive is false, prints the
-// periodic formatted status line every STATUS_INTERVAL_MS (or lets
-// gnssPollNmea()'s NMEA_PASSTHROUGH echo stand in for it).
+// color every time; always updates the lock-history counters (see
+// statusPrintLockHistory()) on transitions. Printing to CMD_SERIAL is
+// gated so it never mixes with gnss.cpp's raw NMEA passthrough: while
+// passthrough is enabled and the menu is closed, both the immediate GPS/
+// PLL lock-gained/lock-lost event lines and the periodic formatted status
+// line (normally every STATUS_INTERVAL_MS) are suppressed, leaving
+// CMD_SERIAL carrying a clean NMEA stream. They resume automatically as
+// soon as passthrough is turned off or the menu opens.
 void statusPoll(bool menuActive);
 
 // Prints a boot-time fatal error and never returns: blinks the status

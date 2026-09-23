@@ -33,8 +33,17 @@ bool gnssConfigureWithRetry();
 // Call every loop() iteration.  Non-blocking: drains whatever bytes are
 // waiting on GNSS_SERIAL, accumulates NMEA lines, validates checksums, and
 // updates the status struct whenever a GGA sentence parses cleanly.  Also
-// echoes raw NMEA lines to CMD_SERIAL when NMEA_PASSTHROUGH is defined.
-void gnssPollNmea();
+// echoes raw NMEA lines (verbatim, regardless of checksum result) to
+// CMD_SERIAL when passthrough is enabled (see gnssSetPassthrough()) --
+// menuActive must reflect the *current* iteration's menu state, since
+// passthrough output is suppressed while the menu has the terminal.
+void gnssPollNmea(bool menuActive);
+
+// Enables/disables raw NMEA passthrough to CMD_SERIAL (see gnssPollNmea()
+// and statusPoll()). Runtime-only, session-only -- always starts false at
+// boot, never persisted. Wired to a menu.cpp toggle.
+void gnssSetPassthrough(bool enable);
+bool gnssIsPassthroughEnabled();
 
 // Latest parsed fix status.  Check .valid and .lastUpdateMs before trusting
 // it -- a stale timestamp means the module has stopped talking (bad wiring,
