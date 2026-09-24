@@ -25,9 +25,9 @@
 // characterization showed the fixed-denominator method could leave a
 // static frequency bias up to several parts in 1e9 on certain
 // frequencies; the continued-fraction search reduces that to the
-// register's fundamental resolution limit (worst case ~7.6e-9 across
-// the full 500 kHz-30 MHz operating range, affecting roughly 1 in
-// 380,000 achievable 1 Hz-resolution frequencies), and to the double-
+// register's fundamental resolution limit (worst case ~5.5e-9 across
+// the full 500 kHz-112.5 MHz operating range, affecting roughly 1 in
+// 400,000 achievable 1 Hz-resolution frequencies), and to the double-
 // precision floor (~1e-14) on everything else -- see
 // si5351PreviewClockFreq() and FREQ_ERROR_WARN_THRESHOLD in config.h.
 //
@@ -41,7 +41,7 @@
 // that factor of 10 intact, which caps the true denominator at
 // 1,000,000 -- safely under the chip's 1,048,575 register limit, so
 // the exact-fraction branch always fires. Verified exhaustively against
-// every multiple of 10 Hz from 500 kHz to 30 MHz (2,950,001 frequencies,
+// every multiple of 10 Hz from 500 kHz to 112.5 MHz (11,200,001 frequencies,
 // 100% exact). This is the simplest actionable guidance for users: pick
 // frequencies to the nearest 10 Hz for a provable accuracy guarantee.
 // See project notes for the full derivation and bench validation.
@@ -74,6 +74,27 @@
 // (isValidMultisynthRatio()) since a PLLB-sharing mismatch can in
 // principle leave the non-driving clock invalid even below 112.5 MHz.
 // See ClockFreqPreview::dividerValid below.
+//
+// VCO/divisor selection (phase noise): findPllParams() and
+// findSharedPllbVco() (CLK1/CLK2 PLLB sharing) prefer the HIGHEST
+// achievable VCO for a given target frequency, not the lowest one that
+// merely fits -- with a bonus preference for a divisor that also makes
+// the VCO an exact multiple of the reference, enabling FBA_INT/FBB_INT
+// (AN619's integer-PLL-feedback jitter bit, Register 22/23 bit D6, now
+// actually written via read-modify-write when applicable). Rationale:
+// for a fixed target output frequency, the feedback divider's noise
+// multiplication and the output divider's noise reduction move together
+// and cancel exactly, so the VCO/divisor choice doesn't affect loop-
+// referred noise -- but it does directly affect how much the VCO's own
+// free-running noise gets divided down, which favors the highest
+// achievable VCO. Both selection functions are closed-form (O(1)), not
+// scanning searches -- important on RP2040/SAMD21, which have no
+// hardware divide. The worst-case accuracy bound above already reflects
+// this (it improved slightly as an incidental side effect, since both
+// are governed by the same gcd(fvco,reference) structure). The
+// phase-noise benefit itself rests on standard PLL theory and AN619's
+// own guidance, not yet a bench measurement on this hardware -- see
+// project notes for the derivation and for bench validation status.
 //
 #include <Arduino.h>
 

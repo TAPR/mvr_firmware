@@ -38,6 +38,20 @@ static const uint8_t SI5351_REG_MSNB_BASE     = 34;
 static const uint8_t SI5351_REG_MS0_BASE      = 42;
 static const uint8_t SI5351_REG_PLL_RESET     = 177;
 static const uint8_t SI5351_REG_XTAL_LOAD     = 183;
+// FBA_INT/FBB_INT (AN619 sec. "Manually Generating an Si5351 Register
+// Map", integer-PLL-feedback-mode bits) are bit D6 of these two
+// registers -- oddly co-located with the CLK6/CLK7 Control registers,
+// which this firmware never otherwise touches (only CLK0-2 are used).
+// "In most cases setting this bit will improve jitter when using even
+// integer divide values" (AN619) -- set whenever the PLL feedback ratio
+// happens to reduce to a pure integer (b=0), which findPllParams() /
+// findSharedPllbVco() now actively prefer when available. Read-modify-
+// write, not a blind write, specifically so CLK6/CLK7's own bits in
+// these registers -- whatever their reset state leaves them as -- are
+// never disturbed by a change that has nothing to do with them.
+static const uint8_t SI5351_REG_FBA_INT       = 22;
+static const uint8_t SI5351_REG_FBB_INT       = 23;
+static const uint8_t FBX_INT_BIT              = (1 << 6);
 
 static const uint8_t XTAL_CL_0PF = 0b00;  // driving XA with an external clock, not a crystal
 
@@ -119,6 +133,24 @@ static uint8_t readReg(uint8_t reg) {
   Wire.requestFrom((uint8_t)SI5351_I2C_ADDR, (uint8_t)1);
   if (Wire.available()) return (uint8_t)Wire.read();
   return 0xFF;  // read failure sentinel; device status bit 7 would read as "still init"
+}
+
+// Sets or clears one bit in a register via read-modify-write, leaving
+// every other bit exactly as it was. Used only for FBA_INT/FBB_INT (see
+// their definition above) so CLK6/CLK7's unrelated bits in the same
+// registers are never disturbed. Treats a read failure (0xFF sentinel)
+// as "don't know the real value" and skips the write rather than
+// risking corrupting bits we can't actually see.
+static bool setRegBit(uint8_t reg, uint8_t bit, bool set) {
+  uint8_t cur = readReg(reg);
+  if (cur == 0xFF) {
+    CMD_SERIAL.print(F("  WARNING: could not read reg "));
+    CMD_SERIAL.print(reg);
+    CMD_SERIAL.println(F(" to set FBx_INT -- skipping (I2C read failure)"));
+    return false;
+  }
+  uint8_t next = set ? (uint8_t)(cur | bit) : (uint8_t)(cur & ~bit);
+  return writeReg(reg, next);
 }
 
 static bool waitForInit(uint32_t timeoutMs = 500) {
@@ -257,8 +289,36 @@ static bool isValidMultisynthRatio(const Ratio& r) {
   return (r.a >= 8);
 }
 
-// Picks the lowest VCO frequency in [VCO_MIN, VCO_MAX] giving an integer
-// output divide, falling back to VCO_MIN scaled up if none exists.
+// Picks the VCO frequency in [VCO_MIN, VCO_MAX] used to synthesize fout,
+// preferring (in order):
+//   1. The highest-VCO divisor that also makes fvco an exact multiple of
+//      fxtal -- eligible for FBA_INT/FBB_INT (integer PLL feedback mode,
+//      AN619's jitter-reduction bit) -- if any such divisor exists.
+//   2. Otherwise, the highest-VCO divisor available at all.
+// Both preferences favor a HIGH VCO, not the lowest one that merely fits.
+// This is a deliberate change from an earlier version of this function,
+// which took the first (lowest) valid divisor. That was suboptimal for
+// phase noise: for a fixed target fout, the feedback divider's
+// 20*log10(N) noise multiplication and the output divider's 20*log10(M)
+// noise reduction move together and cancel exactly (N/M = fout/fxtal is
+// fixed), so the VCO/divisor choice doesn't affect loop-referred noise --
+// but it does directly affect how much the VCO's own free-running noise
+// gets divided down before reaching the output, which favors the HIGHEST
+// achievable VCO. See project notes for the full derivation; not yet
+// bench-validated against real hardware (the accuracy proofs and the
+// FBA_INT-eligibility math are exact and unaffected by this preference
+// either way).
+//
+// Both preferences are computed directly (O(1)), not by scanning the
+// divisor range -- important on RP2040/SAMD21, which have no hardware
+// divide, and the range can span thousands of divisors at low output
+// frequencies. fout*div increases monotonically with div, so:
+//   - the highest achievable VCO is always fout*divHi, no search needed.
+//   - fout*div is a multiple of fxtal exactly when div is a multiple of
+//     step = fxtal / gcd(fout, fxtal); the largest such divisor <= divHi
+//     is (divHi/step)*step, again no search needed.
+// Cross-checked against an exhaustive scan over several million cases
+// with zero mismatches before this replaced the scanning version.
 static PllSolution findPllParams(uint32_t fout, uint32_t fxtal) {
   uint32_t bestFvco;
   uint32_t restrictedDiv;
@@ -266,17 +326,21 @@ static PllSolution findPllParams(uint32_t fout, uint32_t fxtal) {
   if (restrictedHighFreqDiv(fout, restrictedDiv)) {
     bestFvco = fout * restrictedDiv;
   } else {
-    bestFvco = 0;
     uint32_t divLo = (VCO_MIN + fout - 1) / fout;  // ceil
+    if (divLo < MS_DIV_MIN) divLo = MS_DIV_MIN;
     uint32_t divHi = VCO_MAX / fout;               // floor
 
-    for (uint32_t div = divLo; div <= divHi; div++) {
-      if (div >= MS_DIV_MIN) {
-        uint32_t fvco = fout * div;
-        if (fvco >= VCO_MIN && fvco <= VCO_MAX) { bestFvco = fvco; break; }
-      }
-    }
-    if (bestFvco == 0) {
+    if (divLo <= divHi) {
+      uint32_t highestFvco = fout * divHi;
+
+      uint32_t g = u32gcd(fout, fxtal);
+      uint32_t step = fxtal / g;
+      uint32_t candidate = (divHi / step) * step;
+
+      bestFvco = (candidate >= divLo) ? (fout * candidate) : highestFvco;
+    } else {
+      // Shouldn't occur below HIGH_FREQ_DIV_THRESHOLD given how that
+      // threshold is derived, but keep a safety net.
       bestFvco = fout * divLo;
       if (bestFvco < VCO_MIN) bestFvco = VCO_MIN;
     }
@@ -289,39 +353,60 @@ static PllSolution findPllParams(uint32_t fout, uint32_t fxtal) {
 }
 
 // Searches for a single VCO frequency that gives an integer divide for
-// BOTH f1 and f2 (CLK1 and CLK2 sharing PLLB). Uses uint64_t throughout --
-// f1*f2 can reach ~4x10^16, well past uint32_t range, before the LCM
-// reduction brings it back down.
+// BOTH f1 and f2 (CLK1 and CLK2 sharing PLLB), preferring the same way
+// findPllParams() does: highest achievable VCO, with a bonus preference
+// for one that's also an exact multiple of fxtal (FBA_INT-eligible).
+// See findPllParams() above for the phase-noise rationale.
+//
+// Uses uint64_t throughout -- f1*f2 can reach ~4x10^16, well past
+// uint32_t range, before the LCM reduction brings it back down.
 //
 // Declines to even attempt sharing whenever either target is above
 // HIGH_FREQ_DIV_THRESHOLD: above that point the output frequency pins
 // the VCO to one of only two possible values (via the restricted-divider
 // rule above), so genuine sharing is only possible by rare coincidence,
 // and searching for it isn't worth the complexity. The caller's solo
-// fallback (findPllParams(), now restricted-divider-aware) handles the
+// fallback (findPllParams(), restricted-divider-aware) handles the
 // driving clock correctly either way; isValidMultisynthRatio() catches
 // the case where the other, non-driving clock ends up incompatible.
-static bool findSharedPllbVco(uint32_t f1, uint32_t f2, uint32_t& outFvco) {
+//
+// Computed directly (O(1)), not by scanning n: any fvcoCand = lcmF*n is
+// automatically an exact multiple of both f1 and f2 (that's what lcmF
+// means), so the div1/div2 >= MS_DIV_MIN checks reduce to two fixed
+// lower bounds on n (n1, n2 below) rather than needing a per-n test --
+// every n from max(nLo,n1,n2) up to nHi is valid, so the highest is
+// just lcmF*nHi, and the highest multiple-of-fxtal candidate is found
+// the same way findPllParams() finds one. Cross-checked against a full
+// brute-force scan over 215 million (f1,f2) pairs with zero mismatches
+// (found/not-found agreement and value agreement both) before this
+// replaced the scanning version.
+static bool findSharedPllbVco(uint32_t f1, uint32_t f2, uint32_t fxtal, uint32_t& outFvco) {
   if (f1 > HIGH_FREQ_DIV_THRESHOLD || f2 > HIGH_FREQ_DIV_THRESHOLD) return false;
 
   uint32_t g = u32gcd(f1, f2);
   uint64_t lcmF = (uint64_t)f1 * (uint64_t)f2 / g;
+  if (lcmF == 0 || lcmF > VCO_MAX) return false;
 
-  if (lcmF > 0 && lcmF <= VCO_MAX) {
-    uint64_t nLo = (VCO_MIN + lcmF - 1) / lcmF;  // ceil
-    uint64_t nHi = VCO_MAX / lcmF;               // floor
-    for (uint64_t n = nLo; n <= nHi; n++) {
-      uint64_t fvcoCand = lcmF * n;
-      uint32_t div1 = (uint32_t)(fvcoCand / f1);
-      uint32_t div2 = (uint32_t)(fvcoCand / f2);
-      if (fvcoCand == (uint64_t)div1 * f1 && fvcoCand == (uint64_t)div2 * f2 &&
-          div1 >= MS_DIV_MIN && div2 >= MS_DIV_MIN) {
-        outFvco = (uint32_t)fvcoCand;
-        return true;
-      }
-    }
-  }
-  return false;
+  uint64_t nLo = (VCO_MIN + lcmF - 1) / lcmF;  // ceil
+  uint64_t nHi = VCO_MAX / lcmF;               // floor
+
+  uint64_t k1 = lcmF / f1, k2 = lcmF / f2;     // both exact integers -- f1,f2 | lcmF by definition
+  uint64_t n1 = (MS_DIV_MIN + k1 - 1) / k1;    // smallest n with div1=k1*n >= MS_DIV_MIN
+  uint64_t n2 = (MS_DIV_MIN + k2 - 1) / k2;    // same for div2
+  uint64_t feasibleLo = nLo;
+  if (n1 > feasibleLo) feasibleLo = n1;
+  if (n2 > feasibleLo) feasibleLo = n2;
+
+  if (feasibleLo > nHi) return false;  // no n satisfies every constraint at once
+
+  uint64_t highestFvco = lcmF * nHi;
+
+  uint32_t glcm = u32gcd((uint32_t)lcmF, fxtal);  // lcmF <= VCO_MAX, fits uint32_t safely
+  uint32_t step = fxtal / glcm;
+  uint64_t candidateN = (nHi / step) * step;
+
+  outFvco = (uint32_t)((candidateN >= feasibleLo) ? (lcmF * candidateN) : highestFvco);
+  return true;
 }
 
 static void packMultisynthRegs(const An619Ratio& r, uint8_t* out) {
@@ -368,6 +453,9 @@ struct ClockPlan {
   bool          usePllA, usePllB;
   uint32_t      fvcoA, fvcoB;
   An619Ratio    pllRatioA, pllRatioB;
+  bool          pllAIsInteger, pllBIsInteger;  // true iff that PLL's feedback ratio
+                                                // reduced to a pure integer (b=0) --
+                                                // FBA_INT/FBB_INT-eligible, see above
   ClockComputed clk[3];
 };
 
@@ -385,12 +473,13 @@ static ClockPlan computeClockPlan(const ClockState (&clocks)[3]) {
     plan.fvcoA = sol.fvco;
     pllA_ab = sol.ratio;
     packRatio(pllA_ab, plan.pllRatioA);
+    plan.pllAIsInteger = (pllA_ab.b == 0);
   }
 
   if (plan.usePllB) {
     bool gotShared = false;
     if (clocks[1].enabled && clocks[2].enabled) {
-      gotShared = findSharedPllbVco(clocks[1].freqHz, clocks[2].freqHz, plan.fvcoB);
+      gotShared = findSharedPllbVco(clocks[1].freqHz, clocks[2].freqHz, SI5351_REF_FREQ_HZ, plan.fvcoB);
     }
     if (!gotShared) {
       uint32_t soloFreq = clocks[1].enabled ? clocks[1].freqHz : clocks[2].freqHz;
@@ -399,6 +488,7 @@ static ClockPlan computeClockPlan(const ClockState (&clocks)[3]) {
     }
     pllB_ab = fractionalRatio(plan.fvcoB, SI5351_REF_FREQ_HZ);
     packRatio(pllB_ab, plan.pllRatioB);
+    plan.pllBIsInteger = (pllB_ab.b == 0);
   }
 
   for (uint8_t c = 0; c < 3; c++) {
@@ -461,23 +551,22 @@ static bool applyConfiguration() {
     uint8_t regs[8];
     packMultisynthRegs(plan.pllRatioA, regs);
     allOk &= writeRegs(SI5351_REG_MSNA_BASE, regs, 8);
+    allOk &= setRegBit(SI5351_REG_FBA_INT, FBX_INT_BIT, plan.pllAIsInteger);
     CMD_SERIAL.print(F("  PLLA: VCO = "));
     CMD_SERIAL.print(plan.fvcoA / 1.0e6, 3);
-    CMD_SERIAL.println(F(" MHz"));
+    CMD_SERIAL.print(plan.pllAIsInteger ? F(" MHz (integer feedback, FBA_INT set)") : F(" MHz"));
+    CMD_SERIAL.println();
   }
 
   if (plan.usePllB) {
     uint8_t regs[8];
     packMultisynthRegs(plan.pllRatioB, regs);
     allOk &= writeRegs(SI5351_REG_MSNB_BASE, regs, 8);
+    allOk &= setRegBit(SI5351_REG_FBB_INT, FBX_INT_BIT, plan.pllBIsInteger);
     CMD_SERIAL.print(F("  PLLB: VCO = "));
     CMD_SERIAL.print(plan.fvcoB / 1.0e6, 3);
-    CMD_SERIAL.println(F(" MHz"));
-    if (!(s_clock[1].enabled && s_clock[2].enabled)) {
-      // matches original behavior: only warn about a non-shared VCO
-      // when both CLK1 and CLK2 are actually active and might have
-      // wanted to share
-    }
+    CMD_SERIAL.print(plan.pllBIsInteger ? F(" MHz (integer feedback, FBB_INT set)") : F(" MHz"));
+    CMD_SERIAL.println();
   }
 
   uint8_t outputEnableMask = 0xFF;

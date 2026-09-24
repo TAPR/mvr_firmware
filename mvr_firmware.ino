@@ -43,6 +43,10 @@
 // config.h's version-history comment) can gate its echo on this
 // iteration's actual menu state rather than last iteration's.
 //
+// 20260924.1: again no changes to this file -- the VCO-height/FBA_INT
+// divisor-selection improvement is entirely in si5351.cpp/si5351.h. See
+// config.h's version-history comment.
+//
 #include <Arduino.h>
 #include "config.h"
 #include "gnss.h"

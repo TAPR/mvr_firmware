@@ -69,7 +69,35 @@
 // does not persist across a reboot. See gnss.h/.cpp (gnssSetPassthrough(),
 // gnssIsPassthroughEnabled()), status.cpp (printEvents() suppression),
 // and menu.cpp (new toggle option).
-#define FIRMWARE_VERSION "20260922.3"
+//
+// 20260924.1: VCO/divisor selection now prefers the highest achievable
+// VCO frequency (with a bonus preference for one landing on an exact
+// multiple of the reference, enabling FBA_INT/FBB_INT) instead of the
+// lowest one that merely fits, in both findPllParams() (CLK0, and
+// CLK1/CLK2 solo) and findSharedPllbVco() (CLK1+CLK2 sharing). Prompted
+// by external review during the Si5351A fractional-N report's writeup
+// (see project notes for the full derivation): for a fixed target
+// output frequency, the feedback divider's noise multiplication and the
+// output divider's noise reduction move together and cancel exactly, so
+// the choice doesn't affect loop-referred noise -- but it does directly
+// affect how much the VCO's own free-running noise gets divided down,
+// which favors the highest achievable VCO. Both selection functions are
+// closed-form (O(1)), not scanning searches, and were cross-checked
+// against exhaustive/brute-force search with zero mismatches (several
+// million cases for the single-clock path, 215 million frequency pairs
+// for the sharing path). The worst-case accuracy bound (re-verified
+// after this change) improved incidentally, from 7.56e-9 to 5.47e-9
+// over 500kHz-112.5MHz -- both figures governed by the same underlying
+// gcd(fvco,reference) structure; si5351.h's header comment reflects the
+// current numbers. FBA_INT/FBB_INT (AN619's integer-PLL-feedback jitter
+// bit, Register 22/23 bit D6) is now actually set via read-modify-write
+// whenever the corresponding PLL feedback ratio reduces to a pure
+// integer -- previously never written at all. Theoretical/accuracy
+// claims are exact and verified; the phase-noise benefit itself is not
+// yet bench-validated against real hardware -- planned as a follow-up
+// comparison against existing baseline measurements (10 MHz direct,
+// 10 MHz on CLK0, 27 MHz on CLK2, prior algorithm).
+#define FIRMWARE_VERSION "20260924.1"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments
@@ -155,7 +183,7 @@
 // error (dimensionless, e.g. 1e-11 = 10 ppt). Derived from an exhaustive
 // bench-validated analysis of the continued-fraction algorithm's actual
 // achievable error across every 1 Hz-resolution frequency from 500 kHz
-// to 30 MHz (see project notes): 99.97% of all such frequencies land
+// to 112.5 MHz (see project notes): 99.98% of all such frequencies land
 // below 1e-11 with the continued-fraction algorithm, so a value at this
 // threshold flags only the rare, specific frequencies that hit the
 // Si5351's fundamental 20-bit register resolution limit -- these are
