@@ -33,15 +33,23 @@ bool gnssConfigureWithRetry();
 // Call every loop() iteration.  Non-blocking: drains whatever bytes are
 // waiting on GNSS_SERIAL, accumulates NMEA lines, validates checksums, and
 // updates the status struct whenever a GGA sentence parses cleanly.  Also
-// echoes raw NMEA lines (verbatim, regardless of checksum result) to
-// CMD_SERIAL when passthrough is enabled (see gnssSetPassthrough()) --
-// menuActive must reflect the *current* iteration's menu state, since
-// passthrough output is suppressed while the menu has the terminal.
+// echoes raw NMEA lines (verbatim, regardless of checksum result, via
+// cmdOutput.writeRawLine() -- see cmd_output.h) to CMD_SERIAL when
+// passthrough is enabled (see gnssSetPassthrough()) -- menuActive must
+// reflect the *current* iteration's menu state, since the raw echo
+// itself is paused while the menu has the terminal (independent of
+// cmd_output's $PMVR wrapping, which covers everything else CMD_SERIAL
+// prints).
 void gnssPollNmea(bool menuActive);
 
 // Enables/disables raw NMEA passthrough to CMD_SERIAL (see gnssPollNmea()
-// and statusPoll()). Runtime-only, session-only -- always starts false at
-// boot, never persisted. Wired to a menu.cpp toggle.
+// and statusPoll()). This only sets the in-memory, current-session
+// state -- it does not itself persist anything to flash or touch
+// cmd_output's wrap mode. See nv_store.h (nvStoreLoadPassthrough()/
+// nvStoreSavePassthrough()) for persisting a boot-time default, and
+// menu.cpp / mvr_firmware.ino for where cmdOutput.setWrapEnabled()
+// actually gets called on the relevant transitions (menu open/close,
+// boot). Wired to a menu.cpp toggle.
 void gnssSetPassthrough(bool enable);
 bool gnssIsPassthroughEnabled();
 

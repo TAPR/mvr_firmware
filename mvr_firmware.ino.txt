@@ -47,19 +47,8 @@
 // divisor-selection improvement is entirely in si5351.cpp/si5351.h. See
 // config.h's version-history comment.
 //
-// 20260925.1: setup() now loads the persisted NMEA-passthrough boot
-// default (nv_store.h) and primes cmdOutput's $PMVR wrap mode (cmd_
-// output.h) for it BEFORE printing the version banner or running GNSS/
-// Si5351 configuration -- otherwise, with passthrough set to auto-
-// resume, that boot-time text would go out unwrapped ahead of the
-// first wrapped line, which is exactly backwards for a unit that's
-// expected to be feeding an unattended host from power-on. See config.h's
-// version-history comment for the full picture.
-//
 #include <Arduino.h>
 #include "config.h"
-#include "cmd_output.h"
-#include "nv_store.h"
 #include "gnss.h"
 #include "si5351.h"
 #include "status.h"
@@ -72,16 +61,6 @@ void setup() {
     // Give native USB CDC a moment to enumerate; don't hang forever if
     // nobody's watching.
   }
-
-  // Load the persisted passthrough boot default and set cmdOutput's
-  // wrap mode from it before anything else prints a single character.
-  // nvStoreInit() is safe to call again inside si5351Init() below --
-  // idempotent, just re-reads the same flash sector.
-  nvStoreInit();
-  bool passthroughAtBoot = false;
-  nvStoreLoadPassthrough(passthroughAtBoot);  // leaves it false if nothing saved yet -- correct default
-  gnssSetPassthrough(passthroughAtBoot);
-  cmdOutput.setWrapEnabled(passthroughAtBoot);  // menu doesn't exist yet, so this is unconditional
 
   CMD_SERIAL.println();
   statusPrintVersion();

@@ -24,8 +24,13 @@
 #include "si5351.h"
 #include "status.h"
 #include "gnss.h"
+#include "cmd_output.h"
+#include "nv_store.h"
 
-enum class MenuState : uint8_t { IDLE, ROOT, AWAIT_FREQ, AWAIT_FREQ_CONFIRM, AWAIT_DRIVE, AWAIT_CONTINUE };
+enum class MenuState : uint8_t {
+  IDLE, ROOT, AWAIT_FREQ, AWAIT_FREQ_CONFIRM, AWAIT_DRIVE, AWAIT_CONTINUE,
+  AWAIT_PASSTHROUGH_PERSIST
+};
 
 static MenuState s_state          = MenuState::IDLE;
 static uint8_t   s_targetClk      = 0;
@@ -58,12 +63,21 @@ static void printRoot() {
   CMD_SERIAL.println(F("  7) Restore compile-time defaults (overwrites saved config)"));
   CMD_SERIAL.print(F("  8) Toggle raw NMEA passthrough (currently "));
   CMD_SERIAL.print(gnssIsPassthroughEnabled() ? F("ON") : F("OFF"));
-  CMD_SERIAL.println(F(") -- session only, not saved"));
+  CMD_SERIAL.print(F("; boot default "));
+  bool persistedPassthrough = false;
+  nvStoreLoadPassthrough(persistedPassthrough);  // leaves it false if nothing saved yet -- correct
+  CMD_SERIAL.print(persistedPassthrough ? F("ON") : F("OFF"));
+  CMD_SERIAL.println(F(")"));
   CMD_SERIAL.println(F("  9) Exit menu"));
   CMD_SERIAL.print(F("> "));
 }
 
 static void enterRoot() {
+  // The menu is always plain, unwrapped text -- turn wrapping off (if
+  // it was on) BEFORE printing anything, since this is also how the
+  // menu first opens (from menuCheckWake()) as well as how it redraws
+  // itself while already open. Safe/idempotent to call every time.
+  cmdOutput.setWrapEnabled(false);
   s_state = MenuState::ROOT;
   printRoot();
   s_lastActivityMs = millis();
@@ -76,6 +90,9 @@ static void exitMenu() {
   } else {
     CMD_SERIAL.println(F("Exiting menu, back to normal status output.\n"));
   }
+  // Restore wrapping for whatever comes next, now that the exit message
+  // itself has already gone out plain.
+  cmdOutput.setWrapEnabled(gnssIsPassthroughEnabled());
 }
 
 bool menuIsActive() {
@@ -125,8 +142,9 @@ static void handleRootSelection(const char* line) {
       gnssSetPassthrough(!gnssIsPassthroughEnabled());
       CMD_SERIAL.print(F("NMEA passthrough turned "));
       CMD_SERIAL.print(gnssIsPassthroughEnabled() ? F("ON") : F("OFF"));
-      CMD_SERIAL.println(F(" (this session only)."));
-      printRoot();
+      CMD_SERIAL.println(F(" for this session."));
+      CMD_SERIAL.print(F("Persist this as the power-on default? (y/n): "));
+      s_state = MenuState::AWAIT_PASSTHROUGH_PERSIST;
       break;
     case 9:
       exitMenu();
@@ -245,6 +263,23 @@ static void handleFreqConfirm(const char* line) {
   enterRoot();
 }
 
+// Follows the case-8 toggle above. The in-memory/current-session state
+// has already been changed by the time this runs; this only decides
+// whether that new state also becomes the boot-time default. 'n' (or
+// anything but y/Y) leaves whatever was previously saved untouched --
+// this is "persist THIS change", not "clear the saved default".
+static void handlePassthroughPersistConfirm(const char* line) {
+  if (line[0] == 'y' || line[0] == 'Y') {
+    nvStoreSavePassthrough(gnssIsPassthroughEnabled());
+    CMD_SERIAL.print(F("Saved -- passthrough will start "));
+    CMD_SERIAL.print(gnssIsPassthroughEnabled() ? F("ON") : F("OFF"));
+    CMD_SERIAL.println(F(" at boot."));
+  } else {
+    CMD_SERIAL.println(F("Not persisted -- boot default unchanged."));
+  }
+  enterRoot();
+}
+
 static void handleDriveEntry(const char* line) {
   int drive = atoi(line);
   if (!si5351SetDrive((uint8_t)drive)) {
@@ -266,6 +301,9 @@ void menuPoll() {
       CMD_SERIAL.println(F("\nMenu timed out, back to normal status output.\n"));
     }
     s_state = MenuState::IDLE;
+    // Same as exitMenu() -- restore wrapping only after the plain-text
+    // timeout message has already gone out.
+    cmdOutput.setWrapEnabled(gnssIsPassthroughEnabled());
     return;
   }
 
@@ -287,10 +325,11 @@ void menuPoll() {
         }
       } else if (s_lineLen > 0) {
         switch (s_state) {
-          case MenuState::ROOT:               handleRootSelection(s_lineBuf); break;
-          case MenuState::AWAIT_FREQ:         handleFreqEntry(s_lineBuf);     break;
-          case MenuState::AWAIT_FREQ_CONFIRM: handleFreqConfirm(s_lineBuf);   break;
-          case MenuState::AWAIT_DRIVE:        handleDriveEntry(s_lineBuf);    break;
+          case MenuState::ROOT:                     handleRootSelection(s_lineBuf);           break;
+          case MenuState::AWAIT_FREQ:               handleFreqEntry(s_lineBuf);                break;
+          case MenuState::AWAIT_FREQ_CONFIRM:       handleFreqConfirm(s_lineBuf);              break;
+          case MenuState::AWAIT_DRIVE:              handleDriveEntry(s_lineBuf);               break;
+          case MenuState::AWAIT_PASSTHROUGH_PERSIST: handlePassthroughPersistConfirm(s_lineBuf); break;
           default: break;
         }
       }

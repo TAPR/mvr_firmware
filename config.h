@@ -6,7 +6,8 @@
 // defaults, and UX timing.  Everything here is a #define so the values are
 // baked in at compile time -- there is no runtime UBX reconfiguration of
 // the GNSS module in this sketch (only the Si5351 and the NMEA passthrough
-// on/off state get runtime menu control; see menu.h).
+// on/off state, optionally persisted, get runtime menu control; see
+// menu.h).
 //
 
 // ---------------------------------------------------------------------
@@ -97,7 +98,31 @@
 // yet bench-validated against real hardware -- planned as a follow-up
 // comparison against existing baseline measurements (10 MHz direct,
 // 10 MHz on CLK0, 27 MHz on CLK2, prior algorithm).
-#define FIRMWARE_VERSION "20260924.1"
+//
+// 20260925.1: NMEA passthrough can now persist across a reboot (menu
+// toggle, item 8, now asks "persist as boot default? y/n" -- see
+// nv_store.h's nvStoreLoadPassthrough()/nvStoreSavePassthrough()), and
+// the "suppress everything but NMEA" design from 20260922.3 has been
+// replaced with "wrap everything but NMEA": while passthrough is on and
+// the menu is closed, the periodic status line, lock/GPS events, and
+// the boot-time GNSS/Si5351 setup-sequence messages are no longer
+// hidden -- they're sent as proprietary $PMVR NMEA 0183 sentences
+// (see cmd_output.h/.cpp) instead of plain text, so a strict NMEA
+// consumer (gpsd, an ntpd/chrony refclock) skips them rather than
+// getting confused by them, while a human tailing the port can still
+// read them. Motivation: this mode is meant to feed navigation/timing
+// data to a host computer (e.g. as gpsd's source for an ntp server,
+// PPS supplied separately), where persistence across power-cycles
+// matters and suppressing diagnostic output made problems harder to
+// see, not easier. CMD_SERIAL itself is now the cmdOutput object (see
+// cmd_output.h) rather than Serial directly; every existing
+// CMD_SERIAL.print()/println() call site is unaffected by this, since
+// cmdOutput is a drop-in Stream. The one exception is gnss.cpp's raw
+// GNSS-sentence echo, which now calls cmdOutput.writeRawLine() to
+// bypass wrapping entirely -- that text is the actual payload and must
+// never be wrapped. The menu itself is always plain/unwrapped
+// regardless of passthrough state, same as before.
+#define FIRMWARE_VERSION "20260925.1"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments
@@ -118,7 +143,15 @@
                                         // -- an already-clean, debounced binary level, NOT the raw
                                         // phase-detector signal. See status.cpp.
 
-#define CMD_SERIAL         Serial      // USB CDC: status output + command menu
+// CMD_SERIAL is cmdOutput (see cmd_output.h), not Serial directly, as of
+// 20260925.1 -- a drop-in Stream that transparently wraps output as a
+// proprietary $PMVR NMEA sentence when NMEA passthrough is active and
+// the menu is closed, so it stays out of a strict NMEA parser's way.
+// Every existing CMD_SERIAL.print()/println()/available()/read() call
+// site elsewhere in the firmware is unaffected -- see cmd_output.h for
+// the one exception (raw GNSS-sentence echo, which bypasses wrapping).
+#include "cmd_output.h"
+#define CMD_SERIAL         cmdOutput   // USB CDC: status output + command menu
 #define CMD_SERIAL_BAUD    115200      // cosmetic on native-USB boards, but conventional
 
 // ---------------------------------------------------------------------
@@ -157,11 +190,15 @@
                                              // real hardware showed non-responses at the shorter delay
 
 // Raw NMEA passthrough (streaming everything the GNSS module sends on
-// UART out to CMD_SERIAL) is now a runtime menu toggle rather than a
-// compile-time define -- see gnssSetPassthrough()/gnssIsPassthroughEnabled()
-// in gnss.h and the menu option in menu.cpp. Off by default at every boot;
-// there is no #define here to flip anymore. Internal fix/sat-count parsing
-// (gnssGetStatus()) keeps running regardless of whether passthrough is on.
+// UART out to CMD_SERIAL) is a runtime menu toggle, not a compile-time
+// define -- see gnssSetPassthrough()/gnssIsPassthroughEnabled() in
+// gnss.h and the menu option in menu.cpp. It can optionally be saved as
+// the boot-time default (nv_store.h's nvStoreSavePassthrough()); off by
+// default if nothing has ever been saved. Internal fix/sat-count
+// parsing (gnssGetStatus()) keeps running regardless of whether
+// passthrough is on. See cmd_output.h and this file's version-history
+// comment (20260925.1) for how non-NMEA output is kept out of a
+// consuming parser's way while passthrough streams.
 
 // ---------------------------------------------------------------------
 // Si5351A synthesizer configuration

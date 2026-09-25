@@ -170,13 +170,12 @@ static LedColor computeStatusColor(bool gnssOk, bool lockOk) {
 // waiting for the next periodic status line. The very first call primes
 // the tracked state without printing, so boot doesn't announce a
 // spurious "lost" event for a fix/lock that was never there to begin
-// with. Always updates the lock-history counters used by
-// statusPrintLockHistory(), regardless of suppressPrint -- a passthrough
-// session shouldn't make transitions invisible to that command, just
-// invisible on the live stream. suppressPrint is true during an active
-// NMEA passthrough session (see statusPoll()), keeping CMD_SERIAL to a
-// clean NMEA-only stream.
-static void printEvents(bool gnssOk, bool lockOk, uint32_t now, bool suppressPrint) {
+// with. Always prints (and always updates the lock-history counters
+// used by statusPrintLockHistory()) regardless of NMEA passthrough
+// state -- CMD_SERIAL itself (cmd_output.h) transparently wraps this as
+// a $PMVR sentence when passthrough is active and the menu is closed,
+// so a consuming NMEA parser skips it rather than tripping over it.
+static void printEvents(bool gnssOk, bool lockOk, uint32_t now) {
   uint32_t nowSec = now / 1000UL;
 
   if (!s_eventsPrimed) {
@@ -187,10 +186,8 @@ static void printEvents(bool gnssOk, bool lockOk, uint32_t now, bool suppressPri
   }
 
   if (gnssOk != s_lastGnssOk) {
-    if (!suppressPrint) {
-      CMD_SERIAL.print(F("[")); CMD_SERIAL.print(nowSec); CMD_SERIAL.print(F("] GPS: "));
-      CMD_SERIAL.println(gnssOk ? F("LOCKED") : F("LOST"));
-    }
+    CMD_SERIAL.print(F("[")); CMD_SERIAL.print(nowSec); CMD_SERIAL.print(F("] GPS: "));
+    CMD_SERIAL.println(gnssOk ? F("LOCKED") : F("LOST"));
     if (!gnssOk) {
       s_gnssUnlockCount++;
       s_lastUnlockMs   = now;
@@ -200,10 +197,8 @@ static void printEvents(bool gnssOk, bool lockOk, uint32_t now, bool suppressPri
     s_lastGnssOk = gnssOk;
   }
   if (lockOk != s_lastLockOk) {
-    if (!suppressPrint) {
-      CMD_SERIAL.print(F("[")); CMD_SERIAL.print(nowSec); CMD_SERIAL.print(F("] Loop: "));
-      CMD_SERIAL.println(lockOk ? F("LOCKED") : F("LOST"));
-    }
+    CMD_SERIAL.print(F("[")); CMD_SERIAL.print(nowSec); CMD_SERIAL.print(F("] Loop: "));
+    CMD_SERIAL.println(lockOk ? F("LOCKED") : F("LOST"));
     if (!lockOk) {
       s_pllUnlockCount++;
       s_lastUnlockMs   = now;
@@ -322,24 +317,18 @@ void statusPoll(bool menuActive) {
   uint32_t   now   = millis();
   bool       gnssOk = gnssIsOk(gnss, now);
   bool       lockOk = lockIsOk(s_lock, now);
-  // Active passthrough (and menu closed) means CMD_SERIAL should carry a
-  // clean NMEA-only stream -- suppress our own text output, but keep
-  // updating LED color and lock-history counters regardless.
-  bool       suppressForPassthrough = gnssIsPassthroughEnabled() && !menuActive;
 
   ledSet(computeStatusColor(gnssOk, lockOk));
-  printEvents(gnssOk, lockOk, now, suppressForPassthrough);
+  printEvents(gnssOk, lockOk, now);
 
   if (menuActive) {
     s_lastStatusMs = now;  // don't fire a status line the instant the menu exits
     return;
   }
 
-  if (!suppressForPassthrough) {
-    if ((now - s_lastStatusMs) >= STATUS_INTERVAL_MS) {
-      printStatusLine(gnss, s_lock, now);
-      s_lastStatusMs = now;
-    }
+  if ((now - s_lastStatusMs) >= STATUS_INTERVAL_MS) {
+    printStatusLine(gnss, s_lock, now);
+    s_lastStatusMs = now;
   }
 }
 

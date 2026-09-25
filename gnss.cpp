@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include "config.h"
 #include "gnss.h"
+#include "cmd_output.h"
 
 // ---------------------------------------------------------------------
 // UBX protocol constants
@@ -397,7 +398,11 @@ static void handleNmeaLine(char* line, bool menuActive) {
   }
 
   if (s_passthroughEnabled && !menuActive) {
-    CMD_SERIAL.println(line);  // forward raw text regardless of checksum result
+    // Bypasses cmd_output's line buffer and $PMVR wrapping entirely --
+    // this text IS the passthrough payload and must go out verbatim,
+    // regardless of checksum result or whether wrap mode happens to be
+    // on right now.
+    cmdOutput.writeRawLine(line);
   }
 
   if (!checksumOk) return;

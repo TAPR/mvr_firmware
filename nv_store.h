@@ -13,11 +13,16 @@
 // Flash write endurance is finite -- rated similarly to the flash chip
 // itself, not the ~100,000+ cycles of a dedicated EEPROM part -- so this
 // is fine for "save when the user changes something via the menu", not
-// fine for writing every loop() iteration. nvStoreSave() is only ever
-// called from deliberate menu actions (see si5351.cpp), and the
-// underlying EEPROM.commit() only actually touches flash when the data
-// changed (verified against the bundled library's source), so routine
-// use here is not a wear concern.
+// fine for writing every loop() iteration. Both nvStoreSave() and
+// nvStoreSavePassthrough() are only ever called from deliberate menu
+// actions, and the underlying EEPROM.commit() only actually touches
+// flash when the data changed (verified against the bundled library's
+// source), so routine use here is not a wear concern.
+//
+// All settings share one on-flash blob (see nv_store.cpp), so saving
+// one setting preserves whatever else is already stored there -- the
+// Si5351 config and the passthrough flag can be changed independently
+// without clobbering each other.
 //
 // RP2040-only for now (also compiles for ESP32 using its own, differently
 // -verified but API-identical EEPROM.h, in case this ever gets built for
@@ -37,12 +42,24 @@ struct StoredSi5351Config {
 // load/save calls.
 void nvStoreInit();
 
-// Loads the saved configuration into cfg. Returns false (cfg left
-// untouched) if nothing valid has ever been saved -- first boot, or
-// flash that's been erased/corrupted -- so the caller can fall back to
-// compile-time defaults.
+// Loads the saved Si5351 configuration into cfg. Returns false (cfg left
+// untouched) if nothing valid has ever been saved -- first boot, flash
+// that's been erased/corrupted, or an older firmware's blob layout (see
+// the version-bump note in nv_store.cpp) -- so the caller can fall back
+// to compile-time defaults.
 bool nvStoreLoad(StoredSi5351Config& cfg);
 
 // Saves cfg to flash. Cheap to call after every menu change -- see the
-// wear note above.
+// wear note above. Preserves the persisted passthrough flag (if any)
+// already stored.
 void nvStoreSave(const StoredSi5351Config& cfg);
+
+// Loads the persisted "resume NMEA passthrough at boot" flag into
+// enabled. Returns false (enabled left untouched) under the same
+// conditions as nvStoreLoad() above -- callers should default to
+// passthrough-off in that case.
+bool nvStoreLoadPassthrough(bool& enabled);
+
+// Saves the "resume NMEA passthrough at boot" flag to flash. Preserves
+// the persisted Si5351 configuration (if any) already stored.
+void nvStoreSavePassthrough(bool enabled);
