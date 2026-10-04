@@ -66,14 +66,35 @@ static uint8_t computeChecksum(const StoredBlob& b) {
   return sum;
 }
 
-// Reads and validates the raw blob. Returns false (b left as whatever
-// EEPROM.get() put there -- do not trust its contents on a false return)
-// if nothing valid is stored, so callers can fall back to an all-zero
-// default blob instead of partially-garbage data.
+// Reads and validates the raw blob. On success, b holds the stored
+// data. On failure (first-ever boot, corrupted flash, or an older
+// firmware's blob layout/version), b is reset to a zero-initialized
+// default rather than left holding whatever raw bytes EEPROM.get()
+// happened to read -- callers (nvStoreSave(), nvStoreSavePassthrough())
+// read-modify-write against this result, so a caller that's only
+// setting its own field (say, just the passthrough flag) must not
+// accidentally persist garbage into fields it isn't touching.
+//
+// Bug fixed 2026-10-03: this used to leave b holding raw flash content
+// on a failed load (EEPROM.get() populates b unconditionally, before
+// the validation below runs), contradicting both callers' comments,
+// which already assumed a failed load left them with zero-initialized
+// defaults to build on. Concretely: the first save after a
+// STORE_VERSION bump, if it happened to go through
+// nvStoreSavePassthrough() rather than nvStoreSave(), would read the
+// old (now-invalid) blob's raw bytes into the new version's
+// driveMa/clkEnabled/clkFreqHz fields and persist them unchanged,
+// instead of correctly leaving them at their zero defaults.
 static bool loadRawBlob(StoredBlob& b) {
   EEPROM.get(0, b);
-  if (b.magic != STORE_MAGIC || b.version != STORE_VERSION) return false;
-  if (computeChecksum(b) != b.checksum) return false;
+  if (b.magic != STORE_MAGIC || b.version != STORE_VERSION) {
+    b = StoredBlob{};
+    return false;
+  }
+  if (computeChecksum(b) != b.checksum) {
+    b = StoredBlob{};
+    return false;
+  }
   return true;
 }
 

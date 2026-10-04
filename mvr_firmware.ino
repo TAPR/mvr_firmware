@@ -56,6 +56,10 @@
 // expected to be feeding an unattended host from power-on. See config.h's
 // version-history comment for the full picture.
 //
+// 20261003.1: again no changes to this file -- the nv_store.cpp
+// loadRawBlob() fix for this version is entirely internal to that file.
+// See config.h's version-history comment.
+//
 #include <Arduino.h>
 #include "config.h"
 #include "cmd_output.h"

@@ -122,7 +122,19 @@
 // bypass wrapping entirely -- that text is the actual payload and must
 // never be wrapped. The menu itself is always plain/unwrapped
 // regardless of passthrough state, same as before.
-#define FIRMWARE_VERSION "20260925.1"
+//
+// 20261003.1: fixed a latent nv_store.cpp bug found during passthrough-
+// persistence bring-up (not reachable in normal use -- only on the
+// first save after a STORE_VERSION bump): loadRawBlob() left its output
+// struct holding raw, unvalidated flash content on a failed load
+// (EEPROM.get() populates it unconditionally, before the magic/version/
+// checksum check runs), contradicting both nvStoreSave() and
+// nvStoreSavePassthrough()'s read-modify-write assumption that a failed
+// load leaves them zero-initialized defaults to build on. Now resets
+// the struct to zero on any failure, matching what those callers
+// already assumed. No functional effect once a valid blob already
+// exists -- see nv_store.cpp.
+#define FIRMWARE_VERSION "20261003.1"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments
