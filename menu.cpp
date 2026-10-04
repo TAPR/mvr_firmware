@@ -102,9 +102,37 @@ bool menuIsActive() {
 void menuCheckWake() {
   if (s_state != MenuState::IDLE) return;
   if (!CMD_SERIAL.available()) return;
-  // Any keypress wakes the menu. Drain whatever's waiting -- usually
-  // just the keystroke(s) the user typed to get our attention -- so it
-  // doesn't get misread as a menu selection once the prompt is up.
+
+  // Peek before deciding this is really a human asking for the menu.
+  // While passthrough is streaming to an automated consumer, that
+  // consumer can itself write bytes back to this port -- gpsd in
+  // particular actively probes/configures u-blox receivers with UBX
+  // binary commands once it recognizes u-blox-style NMEA talker IDs,
+  // which ours genuinely are. A UBX frame starts with the non-
+  // printable sync byte 0xB5, which would otherwise satisfy
+  // CMD_SERIAL.available() and get misread here as a keypress --
+  // waking the menu, pausing the raw passthrough forward, and (since
+  // the menu is always unwrapped) silencing the $PMVR status output
+  // gpsd was correctly ignoring. A real human at a terminal always
+  // sends something printable (ASCII 0x20-0x7E) or CR/LF.
+  int first = CMD_SERIAL.peek();
+  bool looksHuman = (first >= 0x20 && first <= 0x7E) || first == '\r' || first == '\n';
+  if (!looksHuman) {
+    // Drain everything currently buffered, not just this one byte: a
+    // binary frame usually arrives as a contiguous burst, and later
+    // bytes within it (e.g. UBX's second sync byte, 0x62 'b') can
+    // individually look like plain printable ASCII even though the
+    // frame as a whole isn't something a human typed. This isn't a
+    // hard guarantee against every possible probe sequence, but covers
+    // the common case where a whole frame lands in one poll.
+    while (CMD_SERIAL.available()) CMD_SERIAL.read();
+    return;
+  }
+
+  // Looks human -- any keypress wakes the menu. Drain whatever's
+  // waiting -- usually just the keystroke(s) the user typed to get our
+  // attention -- so it doesn't get misread as a menu selection once the
+  // prompt is up.
   while (CMD_SERIAL.available()) CMD_SERIAL.read();
   enterRoot();
 }
@@ -164,7 +192,32 @@ static void handleRootSelection(const char* line) {
 // committed. Zero (power down) and out-of-range entries still act
 // immediately, same as before, since there's no accuracy question to
 // preview for either of those.
+// True if line is one or more decimal digits and nothing else -- i.e.
+// something atol() parsed as a number because it actually IS one, not
+// because atol() silently returns 0 for non-numeric input too. Used to
+// tell a deliberately-typed "0" (power the clock down) apart from
+// garbage that doesn't start with a digit, which used to be treated
+// identically -- see handleFreqEntry() and the wake-gate fix above for
+// why that distinction matters now.
+static bool isAllDigits(const char* s) {
+  if (*s == '\0') return false;
+  for (const char* p = s; *p; p++) {
+    if (*p < '0' || *p > '9') return false;
+  }
+  return true;
+}
+
 static void handleFreqEntry(const char* line) {
+  if (!isAllDigits(line)) {
+    // Not a number at all. Previously fell through to atol(), which
+    // returns 0 for non-numeric input exactly the same as it would for
+    // a deliberately-typed "0" -- silently powering the targeted clock
+    // down on any garbage line. Reject instead.
+    CMD_SERIAL.println(F("Rejected -- not a valid number."));
+    enterRoot();
+    return;
+  }
+
   long freq = atol(line);
 
   if (freq == 0) {
@@ -176,6 +229,9 @@ static void handleFreqEntry(const char* line) {
   }
 
   if (freq < 0) {
+    // Unreachable now that isAllDigits() has already rejected anything
+    // containing a '-', but left in as a harmless belt-and-suspenders
+    // check rather than relying on that invariant holding forever.
     CMD_SERIAL.println(F("Rejected -- out of range (2500-200000000 Hz)."));
     enterRoot();
     return;

@@ -134,7 +134,29 @@
 // the struct to zero on any failure, matching what those callers
 // already assumed. No functional effect once a valid blob already
 // exists -- see nv_store.cpp.
-#define FIRMWARE_VERSION "20261003.1"
+//
+// 20261004.1: two related hardening fixes to the menu's handling of
+// unsolicited input, prompted by a field unit that lost all three
+// Si5351 clock outputs (confirmed cause: all three CLK freqHz fields
+// read back as 0/disabled) after "numerous restarts" with no known
+// power event -- see project notes for the full diagnosis. (1)
+// menuCheckWake() now peeks at the first waiting byte and only treats
+// it as a human keypress -- and so opens the menu -- if it's printable
+// ASCII or CR/LF. Previously ANY available byte woke the menu,
+// including bytes written back to CMD_SERIAL by whatever's consuming
+// the NMEA passthrough stream (confirmed in practice: gpsd's u-blox
+// probing starts with the non-printable UBX sync byte 0xB5). (2)
+// handleFreqEntry() now requires the entered line to be composed
+// entirely of decimal digits before treating it as a frequency at all;
+// previously it called atol() directly, which returns 0 -- "power this
+// clock down" -- for ANY non-numeric input, not just a deliberately-
+// typed "0". Together, a field unit whose menu got woken by stray
+// bytes (confirmed gpsd probe traffic, or any other unexpected write
+// to CMD_SERIAL) could have a clock silently disabled by the very next
+// non-numeric line it saw, with (1) now making that wake far less
+// likely and (2) making it harmless even if it still happens. See
+// menu.cpp.
+#define FIRMWARE_VERSION "20261004.1"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments

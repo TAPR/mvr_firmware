@@ -60,6 +60,10 @@
 // loadRawBlob() fix for this version is entirely internal to that file.
 // See config.h's version-history comment.
 //
+// 20261004.1: again no changes to this file -- both menu-input
+// hardening fixes for this version are entirely internal to menu.cpp.
+// See config.h's version-history comment.
+//
 #include <Arduino.h>
 #include "config.h"
 #include "cmd_output.h"
