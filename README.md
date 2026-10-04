@@ -1,4 +1,4 @@
-# MVR A2 Firmware
+# MVR Firmware
 
 ## Introduction
 The MVR is a low-cost, modest-performance GPS disciplined oscillator (GPSDO).
