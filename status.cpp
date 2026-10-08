@@ -97,7 +97,7 @@ static void lockPoll() {
 // -----------------------------------------------------------------------
 // Onboard RGB status LED (formerly status_led.h/.cpp)
 // -----------------------------------------------------------------------
-enum class LedColor : uint8_t { OFF, RED, AMBER, GREEN, BLUE };
+enum class LedColor : uint8_t { OFF, RED, AMBER, GREEN, BLUE, MAGENTA };
 
 #if defined(ARDUINO_ARCH_RP2040)
 static const uint8_t NEOPIXEL_PIN     = 12;  // GPIO12, per Seeed's XIAO RP2040 schematic
@@ -119,6 +119,7 @@ static void ledSet(LedColor color) {
     case LedColor::AMBER: rgb = s_pixel.Color(255, 90, 0);  break;
     case LedColor::GREEN: rgb = s_pixel.Color(0, 255, 0);   break;
     case LedColor::BLUE:  rgb = s_pixel.Color(0, 0, 255);   break;
+    case LedColor::MAGENTA: rgb = s_pixel.Color(255, 0, 255); break;
     case LedColor::OFF:
     default:              rgb = s_pixel.Color(0, 0, 0);     break;
   }
@@ -129,6 +130,12 @@ static void ledSet(LedColor color) {
 static void ledInit() { /* no-op */ }
 static void ledSet(LedColor) { /* no-op */ }
 #endif
+
+// Best-effort "firmware-update mode" indicator -- see status.h. Defined
+// unconditionally (a no-op via ledSet() on boards with no onboard LED).
+void statusIndicateUpdateMode() {
+  ledSet(LedColor::MAGENTA);
+}
 
 // -----------------------------------------------------------------------
 // Status/event reporting (formerly status_report.h/.cpp)

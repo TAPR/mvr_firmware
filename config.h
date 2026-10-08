@@ -156,7 +156,20 @@
 // non-numeric line it saw, with (1) now making that wake far less
 // likely and (2) making it harmless even if it still happens. See
 // menu.cpp.
-#define FIRMWARE_VERSION "20261004.1"
+//
+// 20261008.1: new menu option 9, "Reboot into firmware-update (UF2)
+// mode" (RP2040 builds only; absent on SAMD21/ESP32C3), so a new .uf2
+// can be copied onto the RPI-RP2 USB drive without reaching the XIAO's
+// BOOT button inside the enclosure. Gated behind typing UPDATE (any
+// case) rather than y/n, given the stray-byte menu wakes described in
+// the 20261004.1 entry above. "Exit menu" renumbered from 9 to 99 so it
+// stays last as options are added; number 9 (the old Exit) is now the
+// update option, which only asks for the UPDATE confirmation.
+// status.cpp gains statusIndicateUpdateMode() (best-effort magenta LED
+// just before the reboot). See menu.cpp's handleUf2Confirm(). Also
+// dropped the redundant "--- Si5351 Menu ---" heading line from the
+// menu display (menu.cpp, printRoot()).
+#define FIRMWARE_VERSION "20261008.1"
 
 // ---------------------------------------------------------------------
 // Board / pin assignments

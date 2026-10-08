@@ -17,8 +17,22 @@
 // concrete remedy (computed nearest exact alternatives) whenever the
 // warning threshold is exceeded.
 //
+// 20261008.1: added option 9, "Reboot into firmware-update (UF2) mode"
+// (RP2040 builds only -- it relies on rp2040.rebootToBootloader(), and
+// is simply absent on SAMD21/ESP32C3 builds). It reboots the XIAO into
+// the chip's ROM UF2 bootloader so a new .uf2 can be copied onto the
+// RPI-RP2 USB drive without reaching the BOOT button. Because stray
+// bytes have woken this menu before (see the menuCheckWake() notes),
+// the reboot is gated behind typing the word UPDATE (any case), not a
+// single y/n keystroke. "Exit menu" moved from 9 to 99 so it stays the
+// last entry however many features get added above it. Number 9, the
+// old Exit, is now the update option -- harmless if typed out of habit,
+// since it only asks for the UPDATE confirmation and cancels on anything
+// else.
+//
 #include <Arduino.h>
 #include <stdlib.h>
+#include <strings.h>   // strcasecmp()
 #include "config.h"
 #include "menu.h"
 #include "si5351.h"
@@ -29,7 +43,7 @@
 
 enum class MenuState : uint8_t {
   IDLE, ROOT, AWAIT_FREQ, AWAIT_FREQ_CONFIRM, AWAIT_DRIVE, AWAIT_CONTINUE,
-  AWAIT_PASSTHROUGH_PERSIST
+  AWAIT_PASSTHROUGH_PERSIST, AWAIT_UF2_CONFIRM
 };
 
 static MenuState s_state          = MenuState::IDLE;
@@ -42,7 +56,6 @@ static uint8_t   s_lineLen        = 0;
 static void printRoot() {
   CMD_SERIAL.println();
   statusPrintVersion();
-  CMD_SERIAL.println(F("--- Si5351 Menu ---"));
   for (uint8_t c = 0; c < 3; c++) {
     CMD_SERIAL.print(F("  "));
     CMD_SERIAL.print(c + 1);
@@ -68,7 +81,10 @@ static void printRoot() {
   nvStoreLoadPassthrough(persistedPassthrough);  // leaves it false if nothing saved yet -- correct
   CMD_SERIAL.print(persistedPassthrough ? F("ON") : F("OFF"));
   CMD_SERIAL.println(F(")"));
-  CMD_SERIAL.println(F("  9) Exit menu"));
+#if defined(ARDUINO_ARCH_RP2040)
+  CMD_SERIAL.println(F("  9) Reboot into firmware-update (UF2) mode"));
+#endif
+  CMD_SERIAL.println(F(" 99) Exit menu"));
   CMD_SERIAL.print(F("> "));
 }
 
@@ -174,7 +190,16 @@ static void handleRootSelection(const char* line) {
       CMD_SERIAL.print(F("Persist this as the power-on default? (y/n): "));
       s_state = MenuState::AWAIT_PASSTHROUGH_PERSIST;
       break;
+#if defined(ARDUINO_ARCH_RP2040)
     case 9:
+      CMD_SERIAL.println(F("This reboots the unit into firmware-update (UF2) mode. NMEA and"));
+      CMD_SERIAL.println(F("status output stop, and this serial port disconnects, until the"));
+      CMD_SERIAL.println(F("unit restarts (new firmware copied over, or power-cycle/RESET)."));
+      CMD_SERIAL.print(F("Type UPDATE to continue, anything else cancels: "));
+      s_state = MenuState::AWAIT_UF2_CONFIRM;
+      break;
+#endif
+    case 99:
       exitMenu();
       break;
     default:
@@ -336,6 +361,37 @@ static void handlePassthroughPersistConfirm(const char* line) {
   enterRoot();
 }
 
+#if defined(ARDUINO_ARCH_RP2040)
+// Follows option 9. Only the whole word "update" (any case) proceeds;
+// anything else -- including a stray keystroke or a lone y -- cancels
+// and redraws the menu. On proceed this never returns: the RP2040
+// restarts into its ROM UF2 bootloader and shows up as the RPI-RP2 USB
+// drive. The ROM bootloader can't be overwritten, so a bad firmware
+// image is always recoverable by holding BOOT while powering up.
+//
+// The Si5351 is a separate chip that keeps its register contents as
+// long as it stays powered, so its outputs are expected to carry on
+// through the reboot; setup() reconfigures it when firmware restarts.
+static void handleUf2Confirm(const char* line) {
+  if (strcasecmp(line, "update") != 0) {
+    CMD_SERIAL.println(F("Cancelled -- not rebooting."));
+    enterRoot();
+    return;
+  }
+  CMD_SERIAL.println(F("Rebooting into firmware-update (UF2) mode..."));
+  CMD_SERIAL.println(F("  A USB drive named RPI-RP2 will appear on your computer."));
+  CMD_SERIAL.println(F("  Copy the new .uf2 firmware file onto it; the unit restarts by"));
+  CMD_SERIAL.println(F("  itself when the copy finishes. To abort instead, power-cycle the"));
+  CMD_SERIAL.println(F("  unit or press the XIAO's RESET button."));
+  CMD_SERIAL.println(F("  This serial port will disconnect now."));
+  statusIndicateUpdateMode();
+  Serial.flush();   // the physical USB port, directly: CmdOutput doesn't forward flush()
+  delay(250);       // let the host actually read those lines before the port vanishes
+  rp2040.rebootToBootloader();
+  // not reached
+}
+#endif
+
 static void handleDriveEntry(const char* line) {
   int drive = atoi(line);
   if (!si5351SetDrive((uint8_t)drive)) {
@@ -386,6 +442,9 @@ void menuPoll() {
           case MenuState::AWAIT_FREQ_CONFIRM:       handleFreqConfirm(s_lineBuf);              break;
           case MenuState::AWAIT_DRIVE:              handleDriveEntry(s_lineBuf);               break;
           case MenuState::AWAIT_PASSTHROUGH_PERSIST: handlePassthroughPersistConfirm(s_lineBuf); break;
+#if defined(ARDUINO_ARCH_RP2040)
+          case MenuState::AWAIT_UF2_CONFIRM:        handleUf2Confirm(s_lineBuf);               break;
+#endif
           default: break;
         }
       }

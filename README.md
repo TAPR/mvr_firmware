@@ -72,6 +72,49 @@ sudo udevadm trigger
 
 Then **unplug the board and replug it holding BOOTSEL again** — the rule only applies to a fresh connection — and retry Upload.
 
+## Updating the firmware from the menu (no BOOT button needed)
+
+Firmware **20261008.1 and later** (RP2040/XIAO builds) can reboot itself into the
+RP2040's built-in UF2 bootloader, so you don't have to reach the BOOT button.
+Older firmware has no such menu option; use the BOOT-button method described under
+*Recovery* below.
+
+> **WARNING — update mode is a one-way trip.** Once you type `UPDATE`, the unit
+> stays in update mode until you do one of two things: **copy a `.uf2` file onto the
+> RPI-RP2 drive**, or **restart the unit by removing and restoring power**. There is
+> no way back to the menu or to normal operation any other way. While in update
+> mode the unit produces no NMEA or status output. If you restart without copying a
+> file, the unit simply comes back up on the firmware it already had.
+
+### Procedure
+
+1. Open a serial terminal on the MVR and press any key to bring up the menu.
+2. Type `9` and press Enter.
+3. Read the warning, then type `UPDATE` (any case) and press Enter. Anything else
+   cancels and returns to the menu. (Menu option `99` is *Exit menu*.)
+4. The serial port disconnects and a USB drive named **RPI-RP2** appears in your file
+   manager (Windows Explorer, macOS Finder, or your Linux file manager).
+5. Copy the new `.uf2` file **onto the RPI-RP2 drive itself**: drag it onto the
+   RPI-RP2 window or icon, not into a folder on your computer. The `.uf2` files are
+   in the `binaries/` folder, named like `mvr_firmware_YYYYMMDD.N.ino.uf2`.
+6. When the copy finishes, the RPI-RP2 drive disappears by itself and the unit
+   restarts on the new firmware. Don't unplug anything while the copy is running.
+7. Reconnect your terminal. The banner shows the firmware version now running.
+
+On Linux, if the drive doesn't auto-mount, from a terminal:
+
+```
+udisksctl mount -b /dev/disk/by-label/RPI-RP2
+cp mvr_firmware_YYYYMMDD.N.ino.uf2 /media/$USER/RPI-RP2/
+```
+
+### Recovery
+
+The bootloader lives in the RP2040's ROM and can't be overwritten, so a bad
+firmware image never makes the unit unrecoverable. If the unit is unresponsive or
+the menu isn't available, hold the XIAO's **BOOT** button while applying power; the
+RPI-RP2 drive appears and you can copy a good `.uf2` onto it as above.
+
 
 ## Troubleshooting
 

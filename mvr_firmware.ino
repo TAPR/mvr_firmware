@@ -64,6 +64,10 @@
 // hardening fixes for this version are entirely internal to menu.cpp.
 // See config.h's version-history comment.
 //
+// 20261008.1: again no changes to this file -- the new firmware-update
+// (UF2) menu option lives entirely in menu.cpp, plus a small LED helper
+// in status.cpp. See config.h's version-history comment.
+//
 #include <Arduino.h>
 #include "config.h"
 #include "cmd_output.h"

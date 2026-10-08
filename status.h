@@ -50,3 +50,11 @@ void statusHaltWithError(const __FlashStringHelper* message);
 // counts of each, and time since the most recent loss of either.
 // Callable on demand -- see menu.cpp for where it's wired up.
 void statusPrintLockHistory();
+
+// Sets the status LED to magenta, just before menu.cpp reboots the unit
+// into the RP2040's UF2 bootloader. Best-effort only: whether the LED
+// stays lit (and in this color) once the bootloader takes over depends
+// on how the board's LED power gate behaves across the reset -- the
+// RPI-RP2 USB drive appearing is the real indicator. No-op on boards
+// without an onboard RGB LED.
+void statusIndicateUpdateMode();
