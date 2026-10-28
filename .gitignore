@@ -1,0 +1,54 @@
+# Arduino build/export output
+build/
+archive/
+
+# Compiled Arduino artifacts
+*.elf
+*.eep
+*.map
+
+# Arduino IDE / CLI temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+*.orig
+*.patch
+*.ino.txt
+
+# Arduino sketchbook generated files
+*.autosave
+
+# PlatformIO, if accidentally used in the same repo
+.pio/
+.pioenvs/
+.piolibdeps/
+libdeps/
+
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# JetBrains IDEs
+.idea/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory
+
+# Logs
+*.log
+
+# zipfiles
+file*.zip

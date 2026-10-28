@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2026 John Ackermann N8UR
+// SPDX-License-Identifier: MIT
+// Portions of this file were written with assistance from Claude
+// (Anthropic) and were reviewed and edited by the author.
+
 #pragma once
 //
 // status.h — device status: PLL lock detection, the onboard RGB status
