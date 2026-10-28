@@ -19,7 +19,7 @@ but there was substantial human oversight.  As project owner,
 John Ackermann retains responsibility for the contents of this repository.
 
 ## Documentation
-The MVR Assembly and Use Manual in in the docs/ directory, along with
+The MVR Assembly and Operation Manual in in the docs/ directory, along with
 several other reports relating to the MVR.  The Manual is also included
 in the Releases.
 
