@@ -26,7 +26,8 @@ in the Releases.
 ## Precompiled binaries
 Binary files are available in the binaries/ directory, or in the Releases.
 The instructions below are for those who want to compile the code
-themselves.
+themselves.  The manual provides instructions to upload the firmware to
+the XIAO module.
 
 ## Install the RP2040 board package
 
