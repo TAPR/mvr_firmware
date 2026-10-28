@@ -20,11 +20,11 @@ John Ackermann retains responsibility for the contents of this repository.
 
 ## Documentation
 The MVR Assembly and Operation Manual in in the docs/ directory, along with
-several other reports relating to the MVR.  The Manual is also included
+several other reports relating to the MVR.  The manual is also included
 in the Releases.
 
 ## Precompiled binaries
-Binary files are available in binaries/ directory, or in the Releases.
+Binary files are available in the binaries/ directory, or in the Releases.
 The instructions below are for those who want to compile the code
 themselves.
 
